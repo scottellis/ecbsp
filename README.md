@@ -6,12 +6,11 @@ SPI interface.
 
 Overo expansion board 
 
-Pin	Signal
-
-27	mcbsp_clkx
-28	mcbsp_dr
-29	mcbsp_fsx
-30	mcbsp_dx
+	Pin	Signal
+	27	mcbsp_clkx
+	28	mcbsp_dr
+	29	mcbsp_fsx
+	30	mcbsp_dx
 
 
   u-boot
