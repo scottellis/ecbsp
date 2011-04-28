@@ -225,7 +225,6 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 			ecbsp_mcbsp_dma_write(q_tail);
 		}
 		else {
-			ecbsp.current_dma_idx = -1;
 			ecbsp_mcbsp_stop();
 		}
 	}
