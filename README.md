@@ -34,6 +34,10 @@ Then rebuild u-boot
 	$ bitbake virtual/bootloader
 
 
+There is also a kernel patch and modified 2.6.36 recipe if you want a little
+more debug from the plat/mcbsp.c driver. It's not necessary.
+
+
   build
 -------
 
@@ -63,7 +67,7 @@ output like this.
 	[ 8591.777954] ecbsp_mcbsp_stop
 
 
-I have num_motors and NUM_DMA_BLOCKS are set to 1 while I try to track down
+I have num_motors and NUM_DMA_BLOCKS set to 1 while I try to track down
 this DMA misaligned error.
 
 When you run this, the CLKX runs and the FSX goes high, but no data and
