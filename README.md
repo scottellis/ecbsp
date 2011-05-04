@@ -50,28 +50,27 @@ After that, the makefile should work.
 It doesn't work yet. You can load the driver and call start, but you'll get
 output like this.
 
-	$ insmod ecbsp.ko
-	$ echo start > /dev/ecbsp
-	[  601.207519] Calling omap_start_dma
-	[  601.210937] DMA misaligned error with device 17
-	[  601.215515] ecbsp_dma_callback
-	[  601.218566] Calling omap_start_dma
-	[  601.222045] DMA misaligned error with device 17
-	[  601.226623] ecbsp_dma_callback
-	[  601.229675] Calling omap_start_dma
-	[  601.233123] DMA misaligned error with device 17
-	[  601.237670] ecbsp_dma_callback
-	[  601.240753] ecbsp_mcbsp_stop
+	root@overo:~# insmod ecbsp.ko 
+	[ 8589.576599] tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
+	[ 8589.582550] Initializing dma blocks
+	[ 8589.586090] block[0] data ptr: cfadb000  dma handle: 0x8FADB000
+
+	root@overo:~# echo start > /dev/ecbsp 
+	[ 8591.761169] dma_channel = 4
+	[ 8591.764709] calling omap_start_dma
+	[ 8591.768157] DMA misaligned error with device 17
+	[ 8591.772705] ecbsp_dma_callback ch_status [CSR4]: 0x0800
+	[ 8591.777954] ecbsp_mcbsp_stop
 
 
-I have num motors set to 4.
+I have num_motors and NUM_DMA_BLOCKS are set to 1 while I try to track down
+this DMA misaligned error.
 
 When you run this, the CLKX runs and the FSX goes high, but no data and
 no pulsing of the FSX. It goes low again when the stop is called which also
-stops the CLKX.
+stops the CLKX. I just took a WAG at the initial McBSP register config.
 
-I think it's just twiddling register flags to get it working. Need to do some
-more research.
+I'm not sure what I'm doing wrong with the DMA allocation. Can't really proceed
+until that is fixed.
 
-I'm not sure what I'm doing wrong with the DMA allocation.
 
