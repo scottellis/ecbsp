@@ -19,7 +19,7 @@ install:
 	sudo cp $(DRIVERNAME).ko /exports/overo/home/root
 
 install_scp:
-	scp $(DRIVERNAME).ko root@overo:/home/root
+	scp $(DRIVERNAME).ko root@tide:/home/root
 
 
 clean:
