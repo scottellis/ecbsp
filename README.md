@@ -51,30 +51,33 @@ After that, the makefile should work.
   test
 -------
 
-It doesn't work yet. You can load the driver and call start, but you'll get
-output like this.
+The [simple] branch just tries to do one 32-bit write with the frame-sync
+line held low.
+
 
 	root@overo:~# insmod ecbsp.ko 
-	[ 8589.576599] tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
-	[ 8589.582550] Initializing dma blocks
-	[ 8589.586090] block[0] data ptr: cfadb000  dma handle: 0x8FADB000
-
+	[   31.192413] ecbsp_mcbsp_request
+	[   31.195648]     omap_mcbsp_request()
+	[   31.199310]     tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
+	[   31.205535] Initializing dma block
+	[   31.208984]     data ptr: 0xdfe55000  dma handle: 0x9FE55000
 	root@overo:~# echo start > /dev/ecbsp 
-	[ 8591.761169] dma_channel = 4
-	[ 8591.764709] calling omap_start_dma
-	[ 8591.768157] DMA misaligned error with device 17
-	[ 8591.772705] ecbsp_dma_callback ch_status [CSR4]: 0x0800
-	[ 8591.777954] ecbsp_mcbsp_stop
+	[   43.983032] ecbsp_mcbsp_start
+	[   43.986053] ecbsp_set_mcbsp_config
+	[   43.989532]     omap_mcbsp_set_tx_threshold()
+	[   43.993896]     omap_mcbsp_config()
+	[   43.997436]     omap_request_dma()
+	[   44.000854]     dma_channel = 1
+	[   44.003997]     omap_set_dma_transfer_params()
+	[   44.008483]     omap_set_dma_dest_params()
+	[   44.012603] ecbsp_mcbsp_dma_write()
+	[   44.016143]     omap_set_dma_src_params()
+	[   44.020172]     omap_start_dma()
+	[   44.023437]     omap_mcbsp_start()
+	[   44.026855] ecbsp_dma_callback ch_status [CSR1]: 0x0020
 
 
-I have num_motors and NUM_DMA_BLOCKS set to 1 while I try to track down
-this DMA misaligned error.
+There is a o-scope screen shot, the blue is mcbsp_clkx and the red is mcbsp_fsx.
 
-When you run this, the CLKX runs and the FSX goes high, but no data and
-no pulsing of the FSX. It goes low again when the stop is called which also
-stops the CLKX. I just took a WAG at the initial McBSP register config.
-
-I'm not sure what I'm doing wrong with the DMA allocation. Can't really proceed
-until that is fixed.
-
+Making progress, but still not working correctly.
 
