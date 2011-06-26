@@ -29,7 +29,6 @@
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
-#define DEFAULT_NUM_MOTORS 16
 #define DEFAULT_CLKDIV 80
 
 #define MCBSP_REQUESTED		(1 << 0)
@@ -39,6 +38,11 @@
 
 #define TXEN 1
 #define RXEN 0
+
+#define DEFAULT_NUM_MOTORS 4
+static int num_motors = DEFAULT_NUM_MOTORS;
+module_param(num_motors, int, S_IRUGO);
+MODULE_PARM_DESC(num_motors, "Number of motors being controlled");
 
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 
@@ -67,24 +71,20 @@ static int q_full(void)
 					% NUM_DMA_BLOCKS);
 }
 
-struct ecbsp_config {
-	unsigned short num_motors;
-	unsigned short mcbsp_clkdiv;
-};
-
 struct ecbsp {
 	dev_t devt;
 	struct device *dev;
 	struct cdev cdev;
 	struct semaphore sem;
 	struct class *class;
-	struct ecbsp_config config;
 
 	/* dma stuff */
 	unsigned long tx_reg;
 	u8 dma_tx_sync;
 	short dma_channel;
 	short current_dma_idx;
+
+	unsigned short mcbsp_clkdiv;
 
 	unsigned int state;
 	char *user_buff;
@@ -96,7 +96,7 @@ static struct ecbsp ecbsp;
 static struct omap_mcbsp_reg_cfg mcbsp_config = {
         .spcr2 = XINTM(3),
         .spcr1 = 0,
-        .xcr2  = XDATDLY(1),
+        .xcr2  = 0,
         .xcr1  = XFRLEN1(0) | XWDLEN1(OMAP_MCBSP_WORD_32),
         .srgr1 = FWID(31) | CLKGDV(80),
         .srgr2 = CLKSM | FPER(33),
@@ -105,7 +105,6 @@ static struct omap_mcbsp_reg_cfg mcbsp_config = {
         .pcr0  = FSXM | CLKXM | FSXP,
 	.xccr = XDMAEN | XDISABLE,
 	.rccr = 0,
-	
 };
 
 /*
@@ -128,10 +127,7 @@ static int ecbsp_set_mcbsp_config(void)
 	printk(KERN_ALERT "    omap_mcbsp_config()\n");
 
 	/* num bits in our 32-bit 'word' - 1 */
-	mcbsp_config.srgr1 = FWID(31) | CLKGDV(ecbsp.config.mcbsp_clkdiv);
-
-	/* two clock pulses longer then FWID */
-	mcbsp_config.srgr2 = FPER(33) | CLKSM;
+	mcbsp_config.srgr1 = FWID(31) | CLKGDV(ecbsp.mcbsp_clkdiv);
 
 	omap_mcbsp_config(OMAP_MCBSP3, &mcbsp_config); 
 
@@ -312,7 +308,7 @@ static void ecbsp_write_data(void)
 	
 		omap_set_dma_transfer_params(dma_channel,
 						OMAP_DMA_DATA_TYPE_S32,
-						ecbsp.config.num_motors,
+						num_motors,
 						1,
 						OMAP_DMA_SYNC_BLOCK,
 						ecbsp.dma_tx_sync, 
@@ -324,6 +320,9 @@ static void ecbsp_write_data(void)
 					ecbsp.tx_reg,
 					0, 
 					0);
+
+		/* hack??? - get dma irq sync warnings without this */
+		omap_disable_dma_irq(dma_channel, OMAP_DMA_DROP_IRQ);
 
 		ecbsp.dma_channel = dma_channel;
 
@@ -527,12 +526,18 @@ static int __init ecbsp_init(void)
 {
 	memset(&ecbsp, 0, sizeof(struct ecbsp));
 
-	ecbsp.config.mcbsp_clkdiv = DEFAULT_CLKDIV;
-	ecbsp.config.num_motors = DEFAULT_NUM_MOTORS;
+	ecbsp.mcbsp_clkdiv = DEFAULT_CLKDIV;
+
 	ecbsp.dma_channel = -1;
 	ecbsp.current_dma_idx = -1;
 
 	sema_init(&ecbsp.sem, 1);
+
+	if (num_motors < 1 || num_motors > 1024) {
+		printk(KERN_ALERT "Invalid num_motors %d, reset to %d\n",
+			num_motors, DEFAULT_NUM_MOTORS);
+		num_motors = DEFAULT_NUM_MOTORS;
+	}
 
 	if (ecbsp_init_cdev())
 		goto init_fail_1;
