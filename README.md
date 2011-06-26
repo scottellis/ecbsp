@@ -51,33 +51,33 @@ After that, the makefile should work.
   test
 -------
 
-The [simple] branch just tries to do one 32-bit write with the frame-sync
-line held low.
+The [simple] branch now write a six 32-bit words with the frame-sync pulsed
+between each 32-bit block. The six is hard coded as DEFAULT_NUM_MOTORS. I
+tried other values and they work fine.
 
 
 	root@overo:~# insmod ecbsp.ko 
-	[   31.192413] ecbsp_mcbsp_request
-	[   31.195648]     omap_mcbsp_request()
-	[   31.199310]     tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
-	[   31.205535] Initializing dma block
-	[   31.208984]     data ptr: 0xdfe55000  dma handle: 0x9FE55000
-	root@overo:~# echo start > /dev/ecbsp 
-	[   43.983032] ecbsp_mcbsp_start
-	[   43.986053] ecbsp_set_mcbsp_config
-	[   43.989532]     omap_mcbsp_set_tx_threshold()
-	[   43.993896]     omap_mcbsp_config()
-	[   43.997436]     omap_request_dma()
-	[   44.000854]     dma_channel = 1
-	[   44.003997]     omap_set_dma_transfer_params()
-	[   44.008483]     omap_set_dma_dest_params()
-	[   44.012603] ecbsp_mcbsp_dma_write()
-	[   44.016143]     omap_set_dma_src_params()
-	[   44.020172]     omap_start_dma()
-	[   44.023437]     omap_mcbsp_start()
-	[   44.026855] ecbsp_dma_callback ch_status [CSR1]: 0x0020
+	[ 7796.225463] ecbsp_mcbsp_request
+	[ 7796.228637]     omap_mcbsp_request()
+	[ 7796.232330]     tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
+	[ 7796.238555] Initializing dma block
+	[ 7796.242004]     data ptr: 0xdfe95000  dma handle: 0x9FE95000
+	[ 7796.247711] ecbsp_mcbsp_start
+	[ 7796.250701] ecbsp_set_mcbsp_config
+	[ 7796.254119]     omap_mcbsp_set_tx_threshold()
+	[ 7796.258514]     omap_mcbsp_config()
+	[ 7796.262023]     omap_mcbsp_start()
+	root@overo:~# echo write > /dev/ecbsp
+	[ 7804.428131]     omap_request_dma()
+	[ 7804.431549]     dma_channel = 0
+	[ 7804.434722]     omap_set_dma_transfer_params()
+	[ 7804.439270]     omap_set_dma_dest_params()
+	[ 7804.443389] ecbsp_mcbsp_dma_write()
+	[ 7804.446899]     omap_set_dma_src_params()
+	[ 7804.450958]     omap_start_dma()
+	[ 7804.454193] ecbsp_dma_callback ch_status [CSR0]: 0x0020
 
 
 There is a o-scope screen shot, the blue is mcbsp_clkx and the red is mcbsp_fsx.
 
-Making progress, but still not working correctly.
-
+Just need to verify the data now.
