@@ -29,7 +29,7 @@
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
-#define DEFAULT_NUM_MOTORS 1
+#define DEFAULT_NUM_MOTORS 16
 #define DEFAULT_CLKDIV 80
 
 #define MCBSP_REQUESTED		(1 << 0)
@@ -70,7 +70,6 @@ static int q_full(void)
 struct ecbsp_config {
 	unsigned short num_motors;
 	unsigned short mcbsp_clkdiv;
-	unsigned short mcbsp_fper;
 };
 
 struct ecbsp {
@@ -94,13 +93,13 @@ struct ecbsp {
 static struct ecbsp ecbsp;
 
 
-static struct omap_mcbsp_reg_cfg mcbsp_test_config = {
+static struct omap_mcbsp_reg_cfg mcbsp_config = {
         .spcr2 = XINTM(3),
         .spcr1 = 0,
         .xcr2  = XDATDLY(1),
         .xcr1  = XFRLEN1(0) | XWDLEN1(OMAP_MCBSP_WORD_32),
-        .srgr1 = FWID(3) | CLKGDV(80),
-        .srgr2 = CLKSM | FPER(16),
+        .srgr1 = FWID(31) | CLKGDV(80),
+        .srgr2 = CLKSM | FPER(33),
 	.mcr2 = 0,
 	.mcr1 = 0,
         .pcr0  = FSXM | CLKXM | FSXP,
@@ -109,12 +108,35 @@ static struct omap_mcbsp_reg_cfg mcbsp_test_config = {
 	
 };
 
+/*
+  Configure for 32 bit 'word' lengths with a frame sync pulse of
+  two CLKDV cycles between each 'word'
+*/
 static int ecbsp_set_mcbsp_config(void)
 {
-	omap_mcbsp_set_tx_threshold(OMAP_MCBSP3, 4);
+	printk(KERN_ALERT "ecbsp_set_mcbsp_config\n");
 
-	omap_mcbsp_config(OMAP_MCBSP3, &mcbsp_test_config); 
+	if (ecbsp.state & MCBSP_CONFIG_SET) {
+		printk(KERN_ALERT "mcbsp already configured\n");
+		return 0;
+	}
+
+	printk(KERN_ALERT "    omap_mcbsp_set_tx_threshold()\n");
+	/* num bytes in a 32-bit 'word' - 1 */
+	omap_mcbsp_set_tx_threshold(OMAP_MCBSP3, 3);
+
+	printk(KERN_ALERT "    omap_mcbsp_config()\n");
+
+	/* num bits in our 32-bit 'word' - 1 */
+	mcbsp_config.srgr1 = FWID(31) | CLKGDV(ecbsp.config.mcbsp_clkdiv);
+
+	/* two clock pulses longer then FWID */
+	mcbsp_config.srgr2 = FPER(33) | CLKSM;
+
+	omap_mcbsp_config(OMAP_MCBSP3, &mcbsp_config); 
+
 	ecbsp.state |= MCBSP_CONFIG_SET;
+
 	return 0;
 }
 
@@ -125,7 +147,6 @@ static int ecbsp_alloc_dma_blocks(void)
 	printk(KERN_ALERT "Initializing dma blocks\n");
 
 	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		
 		dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
 						GFP_KERNEL | GFP_DMA);
 		
@@ -133,26 +154,10 @@ static int ecbsp_alloc_dma_blocks(void)
 			printk(KERN_ALERT "data buff alloc failed\n");
 			return -ENOMEM;
 		}
-			
-		if (!IS_ALIGNED((unsigned long)dma_block[i].data, DMA_BLOCK_SIZE)) {
-			printk(KERN_ALERT "memory not aligned: %p\n", dma_block[i].data);
-			return -ENOMEM;
-		}
-
-		/*
-		dma_block[i].page = __get_free_page(GFP_KERNEL | __GFP_DMA | __GFP_COMP | __GFP_ZERO);
-		
-		if (!dma_block[i].page) {
-			printk(KERN_ALERT "data buff alloc failed\n");
-			return -1;
-		}
-		
-		dma_block[i].data = (u32 *) dma_block[i].page;
-		*/
 
 		dma_block[i].dma_handle = dma_map_single(ecbsp.dev, 
 							dma_block[i].data, 
-							16, 
+							DMA_BLOCK_SIZE, 
 							DMA_TO_DEVICE);
 
 		if (!dma_block[i].dma_handle) {
@@ -172,11 +177,10 @@ static void ecbsp_free_dma_blocks(void)
 	int i;
 
 	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		
 		if (dma_block[i].dma_handle) {
 			dma_unmap_single(ecbsp.dev, 
 					dma_block[i].dma_handle, 
-					16, 
+					DMA_BLOCK_SIZE, 
 					DMA_TO_DEVICE);
 
 			dma_block[i].dma_handle = 0;
@@ -184,10 +188,6 @@ static void ecbsp_free_dma_blocks(void)
 		
 		if (dma_block[i].data) {
 			kfree(dma_block[i].data);
-			/*
-			free_page(dma_block[i].page);
-			dma_block[i].page = 0;
-			*/
 			dma_block[i].data = 0;
 			
 		}		
@@ -196,13 +196,17 @@ static void ecbsp_free_dma_blocks(void)
 
 static void ecbsp_mcbsp_dma_write(int idx)
 {
+	printk(KERN_ALERT "ecbsp_mcbsp_dma_write(%d)\n", idx);
+
+	printk(KERN_ALERT "    omap_set_dma_src_params()\n");
 	omap_set_dma_src_params(ecbsp.dma_channel,
 				0,
 				OMAP_DMA_AMODE_POST_INC,
 				dma_block[idx].dma_handle,
-				0, 0);
+				0, 
+				0);
 
-	printk(KERN_ALERT "calling omap_start_dma\n");
+	printk(KERN_ALERT "    omap_start_dma()\n");
 	omap_start_dma(ecbsp.dma_channel);
 }
 
@@ -212,11 +216,16 @@ static void ecbsp_mcbsp_stop(void)
 
 	if (ecbsp.state & MCBSP_RUNNING) {
 		ecbsp.state &= ~MCBSP_RUNNING;
+	
+		printk(KERN_ALERT "    omap_mcbsp_stop()\n");
 		omap_mcbsp_stop(OMAP_MCBSP3, TXEN, RXEN);
 	}
 
 	if (ecbsp.dma_channel != -1) {
+		printk(KERN_ALERT "    omap_stop_dma()\n");
 		omap_stop_dma(ecbsp.dma_channel);
+
+		printk(KERN_ALERT "    omap_free_dma()\n");
 		omap_free_dma(ecbsp.dma_channel);
 		ecbsp.dma_channel = -1;
 	}	
@@ -231,10 +240,11 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 		lch, ch_status);
 
 	dma_block[ecbsp.current_dma_idx].write_count++;
+/*
+	This is all reader logic. Need to modify for a writer engine.
 
-	/* this adds an element to the queue, now safe for reader to use
-	   the old q_tail
-	*/
+	// this adds an element to the queue, now safe for reader to use
+	// the old q_tail
 	q_tail = (q_tail + 1) % NUM_DMA_BLOCKS;
 
 	if (ecbsp.state & MCBSP_RUNNING) {
@@ -250,15 +260,14 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 		ecbsp.current_dma_idx = -1;
 	}
 
-	/*
-	if (ecbsp.state & MCBSP_USER_STALLED)
-		wake_up_interruptible(&wq);
-	*/
+	//if (ecbsp.state & MCBSP_USER_STALLED)
+	//	wake_up_interruptible(&wq);
+*/
 }
 
 static void ecbsp_mcbsp_start(void)
 {
-	int dma_channel;
+	printk(KERN_ALERT "ecbsp_mcbsp_start\n");
 
 	if (ecbsp.state & MCBSP_RUNNING) {
 		printk(KERN_ALERT "Already running\n");
@@ -277,20 +286,35 @@ static void ecbsp_mcbsp_start(void)
 		}
 	}
 
+	printk(KERN_ALERT "    omap_mcbsp_start()\n");
+	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
+	ecbsp.state |= MCBSP_RUNNING;	
+}
+
+static void ecbsp_write_data(void)
+{
+	int dma_channel;
+
+	if (!(ecbsp.state & MCBSP_RUNNING)) {
+		printk(KERN_ALERT "Not running\n");
+		return;
+	}
+
 	if (ecbsp.dma_channel == -1) {
-		if (omap_request_dma(ecbsp.dma_tx_sync, "McBSP TX",
-					ecbsp_dma_callback,
-					0,
-					&dma_channel)) {
+		if (omap_request_dma(ecbsp.dma_tx_sync, 
+				"McBSP TX",
+				ecbsp_dma_callback,
+				0,
+				&dma_channel)) {
 			printk(KERN_ALERT "DMA channel request failed\n");
 			return;
 		}
 	
 		omap_set_dma_transfer_params(dma_channel,
-						OMAP_DMA_DATA_TYPE_S16,
-						ecbsp.config.num_motors * 2,
+						OMAP_DMA_DATA_TYPE_S32,
+						ecbsp.config.num_motors,
 						1,
-						OMAP_DMA_SYNC_ELEMENT,
+						OMAP_DMA_SYNC_BLOCK,
 						ecbsp.dma_tx_sync, 
 						0);
 
@@ -298,19 +322,16 @@ static void ecbsp_mcbsp_start(void)
 					0,
 					OMAP_DMA_AMODE_CONSTANT,
 					ecbsp.tx_reg,
-					0, 0);
+					0, 
+					0);
 
 		ecbsp.dma_channel = dma_channel;
 
 		printk(KERN_ALERT "dma_channel = %d\n", dma_channel);
 	}
 
-	ecbsp.state &= ~MCBSP_USER_STALLED;
 	q_head = q_tail = 0;
 	ecbsp.current_dma_idx = 0;
-
-	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
-	ecbsp.state |= MCBSP_RUNNING;	
 
 	ecbsp_mcbsp_dma_write(0);
 }
@@ -319,6 +340,9 @@ static int ecbsp_mcbsp_request(void)
 {
 	int ret;
 	
+	printk(KERN_ALERT "ecbsp_mcbsp_request\n");
+
+	printk(KERN_ALERT "    omap_mcbsp_request()\n");
 	ret = omap_mcbsp_request(OMAP_MCBSP3);
 
 	if (ret < 0) {
@@ -326,15 +350,8 @@ static int ecbsp_mcbsp_request(void)
 		return ret;
 	}
 
-	/* 
-	  Find a better way to get this later, though this is how the in-tree
-	  SOC sound drivers do it 
-	*/
 	ecbsp.tx_reg = OMAP34XX_MCBSP3_BASE + OMAP_MCBSP_REG_DXR;
 	ecbsp.dma_tx_sync = OMAP24XX_DMA_MCBSP3_TX;
-	
-	printk(KERN_ALERT "tx_reg [MCBSP3.DXR] = 0x%08lX  dma_tx_sync = %u\n",
-		ecbsp.tx_reg, ecbsp.dma_tx_sync);
 
 	ecbsp.state |= MCBSP_REQUESTED;
 	ecbsp.state &= ~MCBSP_CONFIG_SET;
@@ -379,6 +396,9 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 	}
 	else if (!strncmp(ecbsp.user_buff, "stop", 4)) {
 		ecbsp_mcbsp_stop();
+	}
+	else if (!strncmp(ecbsp.user_buff, "write", 5)) {
+		ecbsp_write_data();
 	}
 	else {
 		printk(KERN_ALERT "What???\n");
@@ -507,8 +527,8 @@ static int __init ecbsp_init(void)
 {
 	memset(&ecbsp, 0, sizeof(struct ecbsp));
 
-	ecbsp.config.mcbsp_fper = 255;
 	ecbsp.config.mcbsp_clkdiv = DEFAULT_CLKDIV;
+	ecbsp.config.num_motors = DEFAULT_NUM_MOTORS;
 	ecbsp.dma_channel = -1;
 	ecbsp.current_dma_idx = -1;
 
@@ -529,6 +549,8 @@ static int __init ecbsp_init(void)
 		printk(KERN_ALERT "dma block allocation failed\n");
 		goto init_fail_4;
 	}
+
+	ecbsp_mcbsp_start();
 
 	return 0;
 

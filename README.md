@@ -51,30 +51,35 @@ After that, the makefile should work.
   test
 -------
 
-It doesn't work yet. You can load the driver and call start, but you'll get
-output like this.
+So we have basic functionality now. Once you load the driver you should immediately
+start seeing activity on the CLKX line and FSX should be high. The clock should
+be running at ~1MHz.
 
 	root@overo:~# insmod ecbsp.ko 
-	[ 8589.576599] tx_reg [MCBSP3.DXR] = 0x49024008  dma_tx_sync = 17
-	[ 8589.582550] Initializing dma blocks
-	[ 8589.586090] block[0] data ptr: cfadb000  dma handle: 0x8FADB000
+	[ 1580.154907] ecbsp_mcbsp_request
+	[ 1580.158081]     omap_mcbsp_request()
+	[ 1580.161773] Initializing dma blocks
+	[ 1580.165313] block[0] data ptr: dfeb0000  dma handle: 0x9FEB0000
+	[ 1580.171264] ecbsp_mcbsp_start
+	[ 1580.174255] ecbsp_set_mcbsp_config
+	[ 1580.177703]     omap_mcbsp_set_tx_threshold()
+	[ 1580.182067]     omap_mcbsp_config()
+	[ 1580.185607]     omap_mcbsp_start()
 
-	root@overo:~# echo start > /dev/ecbsp 
-	[ 8591.761169] dma_channel = 4
-	[ 8591.764709] calling omap_start_dma
-	[ 8591.768157] DMA misaligned error with device 17
-	[ 8591.772705] ecbsp_dma_callback ch_status [CSR4]: 0x0800
-	[ 8591.777954] ecbsp_mcbsp_stop
+If you then invoke the write function, you should see 16 pulses of the FSX line,
+each time FSX is held low for 32 clocks representing the SPI CS signal held low
+for a 32 bit data transfer. Between each 32-bit transfer the FSX line should go
+high for 2 clock pulses. This is configurable. I just hard-coded 2.
+
+	root@overo:~# echo write > /dev/ecbsp 
+	[ 1588.560852] dma_channel = 1
+	[ 1588.563659] ecbsp_mcbsp_dma_write(0)
+	[ 1588.567260]     omap_set_dma_src_params()
+	[ 1588.571350]     omap_start_dma()
+	[ 1588.574615] DMA synchronization event drop occurred with device 17
+	[ 1588.580810] ecbsp_dma_callback ch_status [CSR1]: 0x0022
 
 
-I have num_motors and NUM_DMA_BLOCKS set to 1 while I try to track down
-this DMA misaligned error.
-
-When you run this, the CLKX runs and the FSX goes high, but no data and
-no pulsing of the FSX. It goes low again when the stop is called which also
-stops the CLKX. I just took a WAG at the initial McBSP register config.
-
-I'm not sure what I'm doing wrong with the DMA allocation. Can't really proceed
-until that is fixed.
+I have num_motors set to 16, hence the 16 cycles for each write call. 
 
 
