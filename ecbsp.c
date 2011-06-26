@@ -16,6 +16,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/spinlock.h>
+#include <linux/delay.h>
 #define DEBUG
 #include <linux/device.h>
 #include <plat/dma.h>
@@ -29,7 +30,7 @@
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
-#define DEFAULT_NUM_MOTORS 1
+#define DEFAULT_NUM_MOTORS 6
 #define DEFAULT_CLKDIV 80
 
 #define MCBSP_REQUESTED		(1 << 0)
@@ -53,7 +54,6 @@ static struct ecbsp_dma dma_block;
 struct ecbsp_config {
 	unsigned short num_motors;
 	unsigned short mcbsp_clkdiv;
-	unsigned short mcbsp_fper;
 };
 
 struct ecbsp {
@@ -76,7 +76,7 @@ struct ecbsp {
 static struct ecbsp ecbsp;
 
 
-static struct omap_mcbsp_reg_cfg mcbsp_test_config = {
+static struct omap_mcbsp_reg_cfg mcbsp_config = {
         .spcr2 = XINTM(3),
         .spcr1 = 0,
         .xcr2  = XDATDLY(1),
@@ -90,22 +90,34 @@ static struct omap_mcbsp_reg_cfg mcbsp_test_config = {
 	.rccr = 0,
 };
 
+/*
+  Conifigure for 32 bit 'word' lengths with a frame sync pulse of
+  two CLKDV cycles between each 'word'
+*/
 static int ecbsp_set_mcbsp_config(void)
 {
 	printk(KERN_ALERT "ecbsp_set_mcbsp_config\n");
 
 	if (ecbsp.state & MCBSP_CONFIG_SET) {
 		printk(KERN_ALERT "mcbsp already configured\n");
+		return 0;
 	}
-	else {
-		printk(KERN_ALERT "    omap_mcbsp_set_tx_threshold()\n");
-		omap_mcbsp_set_tx_threshold(OMAP_MCBSP3, 3);
 
-		printk(KERN_ALERT "    omap_mcbsp_config()\n");
-		omap_mcbsp_config(OMAP_MCBSP3, &mcbsp_test_config); 
+	printk(KERN_ALERT "    omap_mcbsp_set_tx_threshold()\n");
+	/* num bytes in a 32-bit 'word' - 1 */
+	omap_mcbsp_set_tx_threshold(OMAP_MCBSP3, 3);
 
-		ecbsp.state |= MCBSP_CONFIG_SET;
-	}
+	printk(KERN_ALERT "    omap_mcbsp_config()\n");
+
+	/* num bits in our 32-bit 'word' - 1 */
+	mcbsp_config.srgr1 = FWID(31) | CLKGDV(ecbsp.config.mcbsp_clkdiv);
+
+	/* two clock pulses longer then FWID */
+	mcbsp_config.srgr2 = FPER(33) | CLKSM;
+
+	omap_mcbsp_config(OMAP_MCBSP3, &mcbsp_config); 
+
+	ecbsp.state |= MCBSP_CONFIG_SET;
 
 	return 0;
 }
@@ -195,11 +207,21 @@ static void ecbsp_mcbsp_dma_write(void)
 	dma_block.write_count = 0;
 
 	printk(KERN_ALERT "    omap_set_dma_src_params()\n");
+
+	/* Note that src_port is only for omap1
+	void omap_set_dma_src_params(int lch, 
+                                     int src_port, 
+                                     int src_amode,
+			             unsigned long src_start,
+			             int src_ei, 
+                                     int src_fi)
+	*/
 	omap_set_dma_src_params(ecbsp.dma_channel,
 				0,
 				OMAP_DMA_AMODE_POST_INC,
 				dma_block.dma_handle,
-				0, 0);
+				0, 
+                                0);
 
 	printk(KERN_ALERT "    omap_start_dma()\n");
 	omap_start_dma(ecbsp.dma_channel);
@@ -233,13 +255,10 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 {
 	printk(KERN_ALERT "ecbsp_dma_callback ch_status [CSR%d]: 0x%04X\n", 
 		lch, ch_status);
-
 }
 
 static void ecbsp_mcbsp_start(void)
 {
-	int dma_channel;
-
 	printk(KERN_ALERT "ecbsp_mcbsp_start\n");
 
 	if (ecbsp.state & MCBSP_RUNNING) {
@@ -257,6 +276,23 @@ static void ecbsp_mcbsp_start(void)
 			printk(KERN_ALERT "set_mcbsp_config() failed\n");
 			return;
 		}
+	}
+
+	
+	ecbsp.state &= ~MCBSP_USER_STALLED;
+
+	printk(KERN_ALERT "    omap_mcbsp_start()\n");
+	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
+	ecbsp.state |= MCBSP_RUNNING;
+}
+
+static void ecbsp_write_data(void)
+{
+	int dma_channel;
+
+	if (!(ecbsp.state & MCBSP_RUNNING)) {
+		printk(KERN_ALERT "Not running\n");
+		return;
 	}
 
 	if (ecbsp.dma_channel == -1) {
@@ -288,9 +324,9 @@ static void ecbsp_mcbsp_start(void)
                 //                                  int src_or_dst_synch)
 		omap_set_dma_transfer_params(dma_channel,
 						OMAP_DMA_DATA_TYPE_S32,
+						ecbsp.config.num_motors,
 						1,
-						1,
-						OMAP_DMA_SYNC_ELEMENT,
+						OMAP_DMA_SYNC_BLOCK,
 						ecbsp.dma_tx_sync, 
 						0);
 
@@ -308,16 +344,8 @@ static void ecbsp_mcbsp_start(void)
 					0, 
                                         0);
 	}
-	
-	ecbsp.state &= ~MCBSP_USER_STALLED;
 
-	ecbsp_mcbsp_dma_write();
-
-	printk(KERN_ALERT "    omap_mcbsp_start()\n");
-	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
-	ecbsp.state |= MCBSP_RUNNING;	
-	//ecbsp_mcbsp_dma_write();
-
+	ecbsp_mcbsp_dma_write();	
 }
 
 static int ecbsp_mcbsp_request(void)
@@ -387,6 +415,9 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 	}
 	else if (!strncmp(ecbsp.user_buff, "stop", 4)) {
 		ecbsp_mcbsp_stop();
+	}
+	else if (!strncmp(ecbsp.user_buff, "write", 5)) {
+		ecbsp_write_data();
 	}
 	else {
 		printk(KERN_ALERT "What???\n");
@@ -515,9 +546,9 @@ static int __init ecbsp_init(void)
 {
 	memset(&ecbsp, 0, sizeof(struct ecbsp));
 
-	ecbsp.config.mcbsp_fper = 255;
 	ecbsp.config.mcbsp_clkdiv = DEFAULT_CLKDIV;
 	ecbsp.dma_channel = -1;
+	ecbsp.config.num_motors = DEFAULT_NUM_MOTORS;
 
 	sema_init(&ecbsp.sem, 1);
 
@@ -536,6 +567,8 @@ static int __init ecbsp_init(void)
 		printk(KERN_ALERT "dma block allocation failed\n");
 		goto init_fail_4;
 	}
+
+	ecbsp_mcbsp_start();
 
 	return 0;
 
