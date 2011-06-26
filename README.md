@@ -53,33 +53,43 @@ After that, the makefile should work.
 
 So we have basic functionality now. Once you load the driver you should immediately
 start seeing activity on the CLKX line and FSX should be high. The clock should
-be running at ~1MHz.
+be running at ~1MHz. You can specify num_motors 1-1024.
 
-	root@overo:~# insmod ecbsp.ko 
-	[ 1580.154907] ecbsp_mcbsp_request
-	[ 1580.158081]     omap_mcbsp_request()
-	[ 1580.161773] Initializing dma blocks
-	[ 1580.165313] block[0] data ptr: dfeb0000  dma handle: 0x9FEB0000
-	[ 1580.171264] ecbsp_mcbsp_start
-	[ 1580.174255] ecbsp_set_mcbsp_config
-	[ 1580.177703]     omap_mcbsp_set_tx_threshold()
-	[ 1580.182067]     omap_mcbsp_config()
-	[ 1580.185607]     omap_mcbsp_start()
+	root@overo:~# insmod ecbsp.ko num_motors=256
+	[ 1345.906829] ecbsp_mcbsp_request
+	[ 1345.910003]     omap_mcbsp_request()
+	[ 1345.913696] Initializing dma blocks
+	[ 1345.917236] block[0] data ptr: dfab8000  dma handle: 0x9FAB8000
+	[ 1345.923217] ecbsp_mcbsp_start
+	[ 1345.926177] ecbsp_set_mcbsp_config
+	[ 1345.929626]     omap_mcbsp_set_tx_threshold()
+	[ 1345.933990]     omap_mcbsp_config()
+	[ 1345.937530]     omap_mcbsp_start()
 
-If you then invoke the write function, you should see 16 pulses of the FSX line,
-each time FSX is held low for 32 clocks representing the SPI CS signal held low
-for a 32 bit data transfer. Between each 32-bit transfer the FSX line should go
-high for 2 clock pulses. This is configurable. I just hard-coded 2.
+
+If you then invoke the write function, you should see num_motor pulses of the 
+FSX line. For each 32-bit transfer the FSX line is held low representing the 
+SPI CS signal. Between each 32-bit transfer the FSX line should go high for 2 
+clock pulses. This is configurable. I just hard-coded 2.
 
 	root@overo:~# echo write > /dev/ecbsp 
-	[ 1588.560852] dma_channel = 1
-	[ 1588.563659] ecbsp_mcbsp_dma_write(0)
-	[ 1588.567260]     omap_set_dma_src_params()
-	[ 1588.571350]     omap_start_dma()
-	[ 1588.574615] DMA synchronization event drop occurred with device 17
-	[ 1588.580810] ecbsp_dma_callback ch_status [CSR1]: 0x0022
+	[ 1353.562133] dma_channel = 4
+	[ 1353.564941] ecbsp_mcbsp_dma_write(0)
+	[ 1353.568542]     omap_set_dma_src_params()
+	[ 1353.572631]     omap_start_dma()
+	[ 1353.575897] ecbsp_dma_callback ch_status [CSR4]: 0x0020
+	root@overo:~# echo write > /dev/ecbsp 
+	[ 1358.116210] ecbsp_mcbsp_dma_write(0)
+	[ 1358.119812]     omap_set_dma_src_params()
+	[ 1358.123901]     omap_start_dma()
+	[ 1358.127166] ecbsp_dma_callback ch_status [CSR4]: 0x0020
+	root@overo:~# echo write > /dev/ecbsp 
+	[ 1362.053649] ecbsp_mcbsp_dma_write(0)
+	[ 1362.057250]     omap_set_dma_src_params()
+	[ 1362.061340]     omap_start_dma()
+	[ 1362.064605] ecbsp_dma_callback ch_status [CSR4]: 0x0020
 
-
-I have num_motors set to 16, hence the 16 cycles for each write call. 
+I have num_motors defaulting to 4 for easier scope debugging, but you can pass
+in whatever you want.
 
 
