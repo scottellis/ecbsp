@@ -1,7 +1,23 @@
 /*
- * Linux driver for an OMAP3 McBSP controller to communicate using a SPI
- * protocol to external hardware.
- *
+  Linux driver for an OMAP3 McBSP controller to operate multiple motors using 
+  a SPI protocol. The application is for one of Elias Crespin's kinetic art
+  works.
+
+  Copyright (C) 2011, Scott Ellis
+ 
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+ 
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+ 
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/init.h>
@@ -29,6 +45,7 @@
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
+/* for testing, this gives us ~1MHz clock */
 #define DEFAULT_CLKDIV 80
 
 #define MCBSP_REQUESTED		(1 << 0)
@@ -626,7 +643,7 @@ module_exit(ecbsp_exit);
 
 
 MODULE_AUTHOR("Scott Ellis");
-MODULE_DESCRIPTION("Gumstix driver for Elias Crespin artwork");
+MODULE_DESCRIPTION("Gumstix McBSP driver for Elias Crespin artwork");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
 
