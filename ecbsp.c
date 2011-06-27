@@ -136,63 +136,68 @@ static int ecbsp_set_mcbsp_config(void)
 	return 0;
 }
 
-static int ecbsp_alloc_dma_blocks(void)
+static int ecbsp_map_dma_block(int idx)
 {
-	int i;
-
-	printk(KERN_ALERT "Initializing dma blocks\n");
-
-	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
-						GFP_KERNEL | GFP_DMA);
-		
-		if (!dma_block[i].data) {
-			printk(KERN_ALERT "data buff alloc failed\n");
-			return -ENOMEM;
-		}
-
-		dma_block[i].dma_handle = dma_map_single(ecbsp.dev, 
-							dma_block[i].data, 
-							DMA_BLOCK_SIZE, 
-							DMA_TO_DEVICE);
-
-		if (!dma_block[i].dma_handle) {
-			printk(KERN_ALERT "Failed to map dma handle\n");
-			return -ENOMEM;
-		}
-						
-		printk(KERN_ALERT "block[%d] data ptr: %p  dma handle: 0x%08X\n", 
-			i, dma_block[i].data, dma_block[i].dma_handle);
+	if (idx < 0 || idx >= NUM_DMA_BLOCKS) {
+		printk(KERN_ALERT "Bad index to map_dma_block: %d\n", idx);
+		return -EINVAL;
 	}
+
+	if (!dma_block[idx].data) {
+		printk(KERN_ALERT "dma_block[%d].data is NULL, can't map\n", 
+			idx);
+		return -ENOMEM;
+	}
+
+	if (dma_block[idx].dma_handle) {
+		printk(KERN_ALERT "dma_block[%d] already mapped\n", idx);
+		return -EINVAL;
+	}
+
+	dma_block[idx].dma_handle = dma_map_single(ecbsp.dev, 
+						dma_block[idx].data, 
+						DMA_BLOCK_SIZE, 
+						DMA_TO_DEVICE);
+
+	if (!dma_block[idx].dma_handle) {
+		printk(KERN_ALERT "Failed to map dma handle\n");
+		return -ENOMEM;
+	}
+						
+	printk(KERN_ALERT "block[%d] data ptr: %p  dma handle: 0x%08X\n", 
+		idx, dma_block[idx].data, dma_block[idx].dma_handle);
 
 	return 0;
 }
 
-static void ecbsp_free_dma_blocks(void)
+static void ecbsp_unmap_dma_block(int idx)
 {
-	int i;
+	if (idx < 0 || idx >= NUM_DMA_BLOCKS) {
+		printk(KERN_ALERT "Bad index to unmap_dma_block: %d\n", idx);
+		return;
+	}
 
-	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		if (dma_block[i].dma_handle) {
-			dma_unmap_single(ecbsp.dev, 
-					dma_block[i].dma_handle, 
-					DMA_BLOCK_SIZE, 
-					DMA_TO_DEVICE);
+	if (dma_block[idx].dma_handle) {
+		dma_unmap_single(ecbsp.dev, 
+				dma_block[idx].dma_handle, 
+				DMA_BLOCK_SIZE, 
+				DMA_TO_DEVICE);
 
-			dma_block[i].dma_handle = 0;
-		}
-		
-		if (dma_block[i].data) {
-			kfree(dma_block[i].data);
-			dma_block[i].data = 0;
-			
-		}		
+		dma_block[idx].dma_handle = 0;
 	}
 }
 
-static void ecbsp_mcbsp_dma_write(int idx)
+static int ecbsp_mcbsp_dma_write(int idx)
 {
+	int ret;
+
 	printk(KERN_ALERT "ecbsp_mcbsp_dma_write(%d)\n", idx);
+
+	ret = ecbsp_map_dma_block(idx);
+	if (ret) {
+		printk(KERN_ALERT "failed to map dma block\n");
+		return ret;
+	}
 
 	printk(KERN_ALERT "    omap_set_dma_src_params()\n");
 	omap_set_dma_src_params(ecbsp.dma_channel,
@@ -204,6 +209,8 @@ static void ecbsp_mcbsp_dma_write(int idx)
 
 	printk(KERN_ALERT "    omap_start_dma()\n");
 	omap_start_dma(ecbsp.dma_channel);
+
+	return 0;
 }
 
 static void ecbsp_mcbsp_stop(void)
@@ -289,7 +296,7 @@ static void ecbsp_mcbsp_start(void)
 
 static void ecbsp_write_data(void)
 {
-	int dma_channel;
+	int dma_channel, i;
 
 	if (!(ecbsp.state & MCBSP_RUNNING)) {
 		printk(KERN_ALERT "Not running\n");
@@ -331,6 +338,12 @@ static void ecbsp_write_data(void)
 
 	q_head = q_tail = 0;
 	ecbsp.current_dma_idx = 0;
+
+	/* just testing */
+	ecbsp_unmap_dma_block(0);
+
+	for (i = 0; i < num_motors; i++)
+		dma_block[0].data[i] = 0xaaaa3333;
 
 	ecbsp_mcbsp_dma_write(0);
 }
@@ -446,10 +459,23 @@ ecbsp_read_done:
 
 static int ecbsp_open(struct inode *inode, struct file *filp)
 {	
+	int i;
 	int status = 0;
 
 	if (down_interruptible(&ecbsp.sem)) 
 		return -ERESTARTSYS;
+
+	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+		if (!dma_block[i].data) {
+			dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
+							GFP_KERNEL | GFP_DMA);
+		
+			if (!dma_block[i].data) {
+				printk(KERN_ALERT "data buff alloc failed\n");
+				return -ENOMEM;
+			}
+		}
+	}
 	
 	if (!ecbsp.user_buff) {
 		ecbsp.user_buff = kmalloc(USER_BUFF_SIZE, GFP_KERNEL);
@@ -550,17 +576,11 @@ static int __init ecbsp_init(void)
 		goto init_fail_3;
 	}
 
-	if (ecbsp_alloc_dma_blocks()) {
-		printk(KERN_ALERT "dma block allocation failed\n");
-		goto init_fail_4;
-	}
-
+	/* for debug convenience */
 	ecbsp_mcbsp_start();
 
 	return 0;
 
-init_fail_4:
-	omap_mcbsp_free(OMAP_MCBSP3);
 
 init_fail_3:
 	device_destroy(ecbsp.class, ecbsp.devt);
@@ -578,13 +598,13 @@ module_init(ecbsp_init);
 
 static void __exit ecbsp_exit(void)
 {
+	int i;
+
 	if (ecbsp.state & MCBSP_REQUESTED) {
 		ecbsp_mcbsp_stop();
 		omap_mcbsp_free(OMAP_MCBSP3);
 		ecbsp.state &= ~MCBSP_REQUESTED;
 	}
-
-	ecbsp_free_dma_blocks();
 
 	device_destroy(ecbsp.class, ecbsp.devt);
   	class_destroy(ecbsp.class);
@@ -594,6 +614,13 @@ static void __exit ecbsp_exit(void)
 
 	if (ecbsp.user_buff)
 		kfree(ecbsp.user_buff);
+
+	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+		ecbsp_unmap_dma_block(i);
+
+		if (dma_block[i].data)
+			kfree(dma_block[i].data);
+	}
 }
 module_exit(ecbsp_exit);
 
