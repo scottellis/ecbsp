@@ -47,6 +47,9 @@
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
+/* let's not pretend */
+#define MIN_TIMER_INTERVAL_NS 200000
+
 /* for testing, a divider of 80 gives us ~1MHz clock */
 #define DEFAULT_CLKDIV 1
 
@@ -60,7 +63,7 @@
 #define TXEN 1
 #define RXEN 0
 
-#define DEFAULT_NUM_MOTORS 4
+#define DEFAULT_NUM_MOTORS 48
 static int num_motors = DEFAULT_NUM_MOTORS;
 module_param(num_motors, int, S_IRUGO);
 MODULE_PARM_DESC(num_motors, "Number of motors being controlled");
@@ -277,14 +280,14 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 	if (!(ecbsp.state & MCBSP_STARTED))
 		return HRTIMER_NORESTART;
 
-	if (ecbsp.write_count > 4) {
+	if (ecbsp.write_count > 100) {
 		ecbsp.state &= ~DMA_RUNNING;
 		return HRTIMER_NORESTART;
 	}
 
 	ecbsp_mcbsp_dma_write(0);
 	
-	hrtimer_forward_now(&ecbsp.timer, ktime_set(0, 10000));
+	hrtimer_forward_now(&ecbsp.timer, ktime_set(0, MIN_TIMER_INTERVAL_NS));
 
 	return HRTIMER_RESTART;
 }
@@ -385,8 +388,9 @@ static void ecbsp_queue_data(void)
 
 	ecbsp.write_count = 0;
 
-	/* set a 10 usec timer, just testing, this will be variable */
-	hrtimer_start(&ecbsp.timer, ktime_set(0, 10000), HRTIMER_MODE_REL);
+	/* set a 200 usec timer, just testing */
+	hrtimer_start(&ecbsp.timer, ktime_set(0, MIN_TIMER_INTERVAL_NS), 
+			HRTIMER_MODE_REL);
 
 	ecbsp_mcbsp_dma_write(0);
 }
