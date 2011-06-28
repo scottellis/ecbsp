@@ -392,6 +392,17 @@ static int ecbsp_mcbsp_request(void)
 {
 	int ret;
 	
+	/* 
+	We don't want POLL_IO, but we don't want the mcbsp driver
+        allocating irq handlers for McBSP events that we might need.
+	*/
+	ret = omap_mcbsp_set_io_type(OMAP_MCBSP3, OMAP_MCBSP_POLL_IO);
+	
+	if (ret < 0) {
+		printk(KERN_ERR "omap_mcbsp_set_io_type failed\n");
+		return ret;
+	}
+
 	ret = omap_mcbsp_request(OMAP_MCBSP3);
 
 	if (ret < 0) {
