@@ -42,13 +42,12 @@
 #include <linux/gpio.h>
 #include <linux/moduleparam.h>
 
+#define USE_HRTIMER 1
 
 #define USER_BUFF_SIZE 4096
 #define NUM_DMA_BLOCKS 1
 #define DMA_BLOCK_SIZE 4096
 
-/* let's not pretend */
-#define MIN_TIMER_INTERVAL_NS 200000
 
 /* for testing, a divider of 80 gives us ~1MHz clock */
 #define DEFAULT_CLKDIV 1
@@ -67,6 +66,16 @@
 static int num_motors = DEFAULT_NUM_MOTORS;
 module_param(num_motors, int, S_IRUGO);
 MODULE_PARM_DESC(num_motors, "Number of motors being controlled");
+
+#define DEFAULT_DELAY_US 50
+static int delay_us = DEFAULT_DELAY_US;
+module_param(delay_us, int, S_IRUGO);
+MODULE_PARM_DESC(delay_us, "Delay between blocks in microseconds");
+
+static int use_hrtimer = 0;
+module_param(use_hrtimer, int, S_IRUGO);
+MODULE_PARM_DESC(use_hrtimer, "Use hrtimer instead of udelay");
+
 
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 
@@ -100,7 +109,7 @@ struct ecbsp {
 	struct semaphore sem;
 	struct class *class;
 	struct hrtimer timer;
-
+	
 	/* dma stuff */
 	unsigned long tx_reg;
 	u8 dma_tx_sync;
@@ -137,18 +146,13 @@ static struct omap_mcbsp_reg_cfg mcbsp_config = {
 */
 static int ecbsp_set_mcbsp_config(void)
 {
-	printk(KERN_ALERT "ecbsp_set_mcbsp_config\n");
-
 	if (ecbsp.state & MCBSP_CONFIG_SET) {
 		printk(KERN_ALERT "mcbsp already configured\n");
 		return 0;
 	}
 
-	printk(KERN_ALERT "    omap_mcbsp_set_tx_threshold()\n");
 	/* num bytes in a 32-bit 'word' - 1 */
 	omap_mcbsp_set_tx_threshold(OMAP_MCBSP3, 3);
-
-	printk(KERN_ALERT "    omap_mcbsp_config()\n");
 
 	/* num bits in our 32-bit 'word' - 1 */
 	mcbsp_config.srgr1 = FWID(31) | CLKGDV(ecbsp.mcbsp_clkdiv);
@@ -229,20 +233,13 @@ static void ecbsp_mcbsp_stop(void)
 {
 	int i;
 
-	printk(KERN_ALERT "ecbsp_mcbsp_stop\n");
-
 	if (ecbsp.state & MCBSP_STARTED) {
 		ecbsp.state &= ~MCBSP_STARTED;
-	
-		printk(KERN_ALERT "    omap_mcbsp_stop()\n");
 		omap_mcbsp_stop(OMAP_MCBSP3, TXEN, RXEN);
 	}
 
 	if (ecbsp.dma_channel != -1) {
-		printk(KERN_ALERT "    omap_stop_dma()\n");
 		omap_stop_dma(ecbsp.dma_channel);
-
-		printk(KERN_ALERT "    omap_free_dma()\n");
 		omap_free_dma(ecbsp.dma_channel);
 		ecbsp.dma_channel = -1;
 	}	
@@ -268,11 +265,12 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 	ecbsp.write_count++;
 	ecbsp.state &= ~DMA_BUFFER_LOCKED;
 
-	/* no delay */
-	/*
-	if (ecbsp.write_count < 5)
-		ecbsp_mcbsp_dma_write(0);
-	*/
+	if (!use_hrtimer) {
+		if (ecbsp.write_count < 100) {
+			udelay(delay_us);
+			ecbsp_mcbsp_dma_write(0);
+		}
+	}
 }
 
 static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
@@ -286,8 +284,8 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 	}
 
 	ecbsp_mcbsp_dma_write(0);
-	
-	hrtimer_forward_now(&ecbsp.timer, ktime_set(0, MIN_TIMER_INTERVAL_NS));
+		
+	hrtimer_forward_now(&ecbsp.timer, ktime_set(0, delay_us * 1000));
 
 	return HRTIMER_RESTART;
 }
@@ -295,8 +293,6 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 static int ecbsp_mcbsp_start(void)
 {
 	int dma_channel, ret, i;
-
-	printk(KERN_ALERT "ecbsp_mcbsp_start\n");
 
 	if (ecbsp.state & MCBSP_STARTED) {
 		printk(KERN_ALERT "Already running\n");
@@ -349,8 +345,6 @@ static int ecbsp_mcbsp_start(void)
 
 		omap_disable_dma_irq(dma_channel, OMAP_DMA_DROP_IRQ);
 		ecbsp.dma_channel = dma_channel;
-
-		printk(KERN_ALERT "dma_channel = %d\n", dma_channel);
 	}
 
 
@@ -364,7 +358,6 @@ static int ecbsp_mcbsp_start(void)
 	q_head = q_tail = 0;
 	ecbsp.current_dma_idx = -1;
 
-	printk(KERN_ALERT "    omap_mcbsp_start()\n");
 	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
 	ecbsp.state |= MCBSP_STARTED;
 
@@ -388,9 +381,9 @@ static void ecbsp_queue_data(void)
 
 	ecbsp.write_count = 0;
 
-	/* set a 200 usec timer, just testing */
-	hrtimer_start(&ecbsp.timer, ktime_set(0, MIN_TIMER_INTERVAL_NS), 
-			HRTIMER_MODE_REL);
+	if (use_hrtimer)
+		hrtimer_start(&ecbsp.timer, ktime_set(0, delay_us * 1000), 
+				HRTIMER_MODE_REL);
 
 	ecbsp_mcbsp_dma_write(0);
 }
@@ -399,9 +392,6 @@ static int ecbsp_mcbsp_request(void)
 {
 	int ret;
 	
-	printk(KERN_ALERT "ecbsp_mcbsp_request\n");
-
-	printk(KERN_ALERT "    omap_mcbsp_request()\n");
 	ret = omap_mcbsp_request(OMAP_MCBSP3);
 
 	if (ret < 0) {
@@ -600,6 +590,16 @@ static int __init ecbsp_init(void)
 		num_motors = DEFAULT_NUM_MOTORS;
 	}
 
+	if (delay_us < 1 || delay_us > 1000) {
+		printk(KERN_ALERT "Invalid delay_us %d, reset to %d\n",
+			delay_us, DEFAULT_DELAY_US);
+
+		delay_us = DEFAULT_DELAY_US;
+	}
+
+	if (use_hrtimer != 1)
+		use_hrtimer = 0;
+
 	if (ecbsp_init_cdev())
 		goto init_fail_1;
 
@@ -611,8 +611,13 @@ static int __init ecbsp_init(void)
 		goto init_fail_3;
 	}
 
-	hrtimer_init(&ecbsp.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	ecbsp.timer.function = ecbsp_timer_callback;
+	if (use_hrtimer) {
+		hrtimer_init(&ecbsp.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		ecbsp.timer.function = ecbsp_timer_callback;
+	}
+	
+	printk(KERN_INFO "use_hrtimer = %d  delay_us = %d\n",
+		use_hrtimer, delay_us);
 
 	/* for debug convenience */
 	if (ecbsp_mcbsp_start())
