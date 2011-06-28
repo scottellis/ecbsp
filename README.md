@@ -53,43 +53,53 @@ After that, the makefile should work.
 
 So we have basic functionality now. Once you load the driver you should immediately
 start seeing activity on the CLKX line and FSX should be high. The clock should
-be running at ~1MHz. You can specify num_motors 1-1024.
+be running at ~1MHz. You can specify three module params
 
-	root@overo:~# insmod ecbsp.ko num_motors=256
-	[ 1345.906829] ecbsp_mcbsp_request
-	[ 1345.910003]     omap_mcbsp_request()
-	[ 1345.913696] Initializing dma blocks
-	[ 1345.917236] block[0] data ptr: dfab8000  dma handle: 0x9FAB8000
-	[ 1345.923217] ecbsp_mcbsp_start
-	[ 1345.926177] ecbsp_set_mcbsp_config
-	[ 1345.929626]     omap_mcbsp_set_tx_threshold()
-	[ 1345.933990]     omap_mcbsp_config()
-	[ 1345.937530]     omap_mcbsp_start()
+	num_motors=(1-1024)
+	delay_us=(1-1000)
+	use_hrtimer=(0 or 1)
 
+You can only changes these parameters on driver load for now. This will change.
 
 If you then invoke the write function, you should see num_motor pulses of the 
 FSX line. For each 32-bit transfer the FSX line is held low representing the 
 SPI CS signal. Between each 32-bit transfer the FSX line should go high for 2 
 clock pulses. This is configurable. I just hard-coded 2.
 
-	root@overo:~# echo write > /dev/ecbsp 
-	[ 1353.562133] dma_channel = 4
-	[ 1353.564941] ecbsp_mcbsp_dma_write(0)
-	[ 1353.568542]     omap_set_dma_src_params()
-	[ 1353.572631]     omap_start_dma()
-	[ 1353.575897] ecbsp_dma_callback ch_status [CSR4]: 0x0020
-	root@overo:~# echo write > /dev/ecbsp 
-	[ 1358.116210] ecbsp_mcbsp_dma_write(0)
-	[ 1358.119812]     omap_set_dma_src_params()
-	[ 1358.123901]     omap_start_dma()
-	[ 1358.127166] ecbsp_dma_callback ch_status [CSR4]: 0x0020
-	root@overo:~# echo write > /dev/ecbsp 
-	[ 1362.053649] ecbsp_mcbsp_dma_write(0)
-	[ 1362.057250]     omap_set_dma_src_params()
-	[ 1362.061340]     omap_start_dma()
-	[ 1362.064605] ecbsp_dma_callback ch_status [CSR4]: 0x0020
+Here's an example session, fooling around with delays. Need a scope to watch
+what's happening. 
 
-I have num_motors defaulting to 4 for easier scope debugging, but you can pass
-in whatever you want.
+	root@tide:~# insmod ecbsp.ko delay_us=46 num_motors=48
+	[ 7650.548400] use_hrtimer = 0  delay_us = 46
+	root@tide:~# echo write > /dev/ecbsp 
+
+	root@tide:~# rmmod ecbsp.ko 
+
+	root@tide:~# insmod ecbsp.ko delay_us=56 num_motors=48
+	[ 7863.298736] use_hrtimer = 0  delay_us = 56
+	root@tide:~# echo write > /dev/ecbsp 
+
+	root@tide:~# rmmod ecbsp.ko 
+
+	root@tide:~# insmod ecbsp.ko delay_us=86 num_motors=48
+	[ 8498.462493] use_hrtimer = 0  delay_us = 86
+	root@tide:~# echo write > /dev/ecbsp 
+
+Right now the driver is hard-coded to send 100 blocks of num_motors with the 
+delay you specify in between each. The delay you give has to compensate for
+the data transfer since we starting the new block delay from the DMA callback
+not the McBSP transfer complete callback. This may change. Still working out
+what we want to do for the actual project.
+
+The hard-coded clock speed is set at ~41.5MHz. Empirically, an estimate ~750ns
+for each 32-bit transfer is good for compensating the delay at this speed.
+
+48 * 750ns = 36us, so that's why you see delay_us = 46. That turns into a delay
+between blocks of 10 us.
+
+Hey! It's a work in progress ;-)
+
+
+
 
 
