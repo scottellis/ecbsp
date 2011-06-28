@@ -42,11 +42,23 @@
 #include <linux/gpio.h>
 #include <linux/moduleparam.h>
 
-#define USE_HRTIMER 1
+#define NUM_TEST_BLOCKS	100000 
 
 #define USER_BUFF_SIZE 4096
-#define NUM_DMA_BLOCKS 1
-#define DMA_BLOCK_SIZE 4096
+#define NUM_DMA_BLOCKS 1024
+
+/*
+ The McBSP3 transmit buffer XB is 128×32 bit words.
+
+ To keep things simple, lets restrict the number of motors to fit.
+ This is not a hard limit and the DMA engine should handle the details,
+ but we'll start here.
+
+ 128 x 4 = 512 bytes is our max required DMA block size
+ 512 bytes x 4 motors per byte = 2048 max motors 
+*/
+#define DMA_BLOCK_SIZE 512
+#define MAX_MOTORS 2048
 
 
 /* for testing, a divider of 80 gives us ~1MHz clock */
@@ -62,7 +74,7 @@
 #define TXEN 1
 #define RXEN 0
 
-#define DEFAULT_NUM_MOTORS 48
+#define DEFAULT_NUM_MOTORS 768
 static int num_motors = DEFAULT_NUM_MOTORS;
 module_param(num_motors, int, S_IRUGO);
 MODULE_PARM_DESC(num_motors, "Number of motors being controlled");
@@ -72,6 +84,7 @@ static int delay_us = DEFAULT_DELAY_US;
 module_param(delay_us, int, S_IRUGO);
 MODULE_PARM_DESC(delay_us, "Delay between blocks in microseconds");
 
+/* manual control for testing only */
 static int use_hrtimer = 0;
 module_param(use_hrtimer, int, S_IRUGO);
 MODULE_PARM_DESC(use_hrtimer, "Use hrtimer instead of udelay");
@@ -81,7 +94,7 @@ static DECLARE_WAIT_QUEUE_HEAD(wq);
 
 struct ecbsp_dma {
 	dma_addr_t dma_handle;
-	u32 *data;
+	u8 *data;
 };
 
 static struct ecbsp_dma dma_block[NUM_DMA_BLOCKS];
@@ -147,7 +160,7 @@ static struct omap_mcbsp_reg_cfg mcbsp_config = {
 static int ecbsp_set_mcbsp_config(void)
 {
 	if (ecbsp.state & MCBSP_CONFIG_SET) {
-		printk(KERN_ALERT "mcbsp already configured\n");
+		printk(KERN_INFO "mcbsp already configured\n");
 		return 0;
 	}
 
@@ -167,18 +180,18 @@ static int ecbsp_set_mcbsp_config(void)
 static int ecbsp_map_dma_block(int idx)
 {
 	if (idx < 0 || idx >= NUM_DMA_BLOCKS) {
-		printk(KERN_ALERT "Bad index to map_dma_block: %d\n", idx);
+		printk(KERN_ERR "Bad index to map_dma_block: %d\n", idx);
 		return -EINVAL;
 	}
 
 	if (!dma_block[idx].data) {
-		printk(KERN_ALERT "dma_block[%d].data is NULL, can't map\n", 
+		printk(KERN_ERR "dma_block[%d].data is NULL, can't map\n", 
 			idx);
 		return -ENOMEM;
 	}
 
 	if (dma_block[idx].dma_handle) {
-		printk(KERN_ALERT "dma_block[%d] already mapped\n", idx);
+		printk(KERN_ERR "dma_block[%d] already mapped\n", idx);
 		return -EINVAL;
 	}
 
@@ -188,7 +201,7 @@ static int ecbsp_map_dma_block(int idx)
 						DMA_TO_DEVICE);
 
 	if (!dma_block[idx].dma_handle) {
-		printk(KERN_ALERT "Failed to map dma handle\n");
+		printk(KERN_ERR "Failed to map dma handle\n");
 		return -ENOMEM;
 	}
 						
@@ -244,21 +257,15 @@ static void ecbsp_mcbsp_stop(void)
 		ecbsp.dma_channel = -1;
 	}	
 
-	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+	for (i = 0; i < NUM_DMA_BLOCKS; i++)
 		ecbsp_unmap_dma_block(i);
-
-		if (dma_block[i].data) {
-			kfree(dma_block[i].data);
-			dma_block[i].data = 0;
-		}
-	}
 }
 
 /* this is executing inside of the dma irq_handler */
 static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 {
 	if (ch_status != 0x0020)
-		printk(KERN_ALERT 
+		printk(KERN_ERR 
 			"ecbsp_dma_callback ch_status [CSR%d]: 0x%04X\n", 
 			lch, ch_status);
 
@@ -266,7 +273,7 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 	ecbsp.state &= ~DMA_BUFFER_LOCKED;
 
 	if (!use_hrtimer) {
-		if (ecbsp.write_count < 100) {
+		if (ecbsp.write_count < NUM_TEST_BLOCKS) {
 			udelay(delay_us);
 			ecbsp_mcbsp_dma_write(0);
 		}
@@ -278,7 +285,7 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 	if (!(ecbsp.state & MCBSP_STARTED))
 		return HRTIMER_NORESTART;
 
-	if (ecbsp.write_count > 100) {
+	if (ecbsp.write_count >= NUM_TEST_BLOCKS) {
 		ecbsp.state &= ~DMA_RUNNING;
 		return HRTIMER_NORESTART;
 	}
@@ -292,28 +299,16 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 
 static int ecbsp_mcbsp_start(void)
 {
-	int dma_channel, ret, i;
+	int dma_channel, ret;
 
 	if (ecbsp.state & MCBSP_STARTED) {
-		printk(KERN_ALERT "Already running\n");
+		printk(KERN_INFO "Already running\n");
 		return -EINVAL;
 	}
 
 	if (!(ecbsp.state & MCBSP_REQUESTED)) {
-		printk(KERN_ALERT "Error: start called before request\n");
+		printk(KERN_ERR "Error: start called before request\n");
 		return -EINVAL;
-	}
-
-	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		if (!dma_block[i].data) {
-			dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
-							GFP_KERNEL | GFP_DMA);
-		
-			if (!dma_block[i].data) {
-				printk(KERN_ALERT "data buff alloc failed\n");
-				return -ENOMEM;
-			}
-		}
 	}
 
 	if (ecbsp.dma_channel == -1) {
@@ -324,7 +319,7 @@ static int ecbsp_mcbsp_start(void)
 				&dma_channel);
 
 		if (ret) {
-			printk(KERN_ALERT "DMA channel request failed\n");
+			printk(KERN_ERR "DMA channel request failed\n");
 			return ret;
 		}
 	
@@ -350,7 +345,7 @@ static int ecbsp_mcbsp_start(void)
 
 	if (!(ecbsp.state & MCBSP_CONFIG_SET)) {
 		if (ecbsp_set_mcbsp_config()) {
-			printk(KERN_ALERT "set_mcbsp_config() failed\n");
+			printk(KERN_ERR "set_mcbsp_config() failed\n");
 			return -EINVAL;
 		}
 	}
@@ -367,7 +362,7 @@ static int ecbsp_mcbsp_start(void)
 static void ecbsp_queue_data(void)
 {
 	if (!(ecbsp.state & MCBSP_STARTED)) {
-		printk(KERN_ALERT "Not running\n");
+		printk(KERN_INFO "Not running\n");
 		return;
 	}
 
@@ -375,7 +370,7 @@ static void ecbsp_queue_data(void)
 	ecbsp_unmap_dma_block(0);
 
 	if (ecbsp_map_dma_block(0)) {
-		printk(KERN_ALERT "DMA mapping failed in ecbsp_queue_data()\n");
+		printk(KERN_ERR "DMA mapping failed in ecbsp_queue_data()\n");
 		return;
 	}
 
@@ -395,6 +390,7 @@ static int ecbsp_mcbsp_request(void)
 	/* 
 	We don't want POLL_IO, but we don't want the mcbsp driver
         allocating irq handlers for McBSP events that we might need.
+	Have to call this before omap_mcbsp_request().
 	*/
 	ret = omap_mcbsp_set_io_type(OMAP_MCBSP3, OMAP_MCBSP_POLL_IO);
 	
@@ -406,7 +402,7 @@ static int ecbsp_mcbsp_request(void)
 	ret = omap_mcbsp_request(OMAP_MCBSP3);
 
 	if (ret < 0) {
-		printk(KERN_ALERT "omap_mcbsp_request failed\n");
+		printk(KERN_ERR "omap_mcbsp_request failed\n");
 		return ret;
 	}
 
@@ -461,7 +457,7 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 		ecbsp_queue_data();
 	}
 	else {
-		printk(KERN_ALERT "What???\n");
+		printk(KERN_ERR "What???\n");
 	}
 	
 	status = len;
@@ -506,17 +502,30 @@ ecbsp_read_done:
 }
 
 static int ecbsp_open(struct inode *inode, struct file *filp)
-{	
+{
+	int i;	
 	int status = 0;
 
 	if (down_interruptible(&ecbsp.sem)) 
 		return -ERESTARTSYS;
 	
+	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+		if (!dma_block[i].data) {
+			dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
+							GFP_KERNEL | GFP_DMA);
+		
+			if (!dma_block[i].data) {
+				printk(KERN_ALERT "data buff alloc failed\n");
+				return -ENOMEM;
+			}
+		}
+	}
+
 	if (!ecbsp.user_buff) {
 		ecbsp.user_buff = kmalloc(USER_BUFF_SIZE, GFP_KERNEL);
 
 		if (!ecbsp.user_buff) {
-			printk(KERN_ALERT 
+			printk(KERN_ERR 
 				"ecbsp_open: user_buff alloc failed\n");
 
 			status = -ENOMEM;
@@ -543,8 +552,7 @@ static int __init ecbsp_init_cdev(void)
 
 	error = alloc_chrdev_region(&ecbsp.devt, 0, 1, "ecbsp");
 	if (error < 0) {
-		printk(KERN_ALERT 
-			"alloc_chrdev_region() failed: error = %d \n", 
+		printk(KERN_ERR "alloc_chrdev_region() failed: error = %d \n", 
 			error);
 		
 		return -1;
@@ -555,7 +563,7 @@ static int __init ecbsp_init_cdev(void)
 
 	error = cdev_add(&ecbsp.cdev, ecbsp.devt, 1);
 	if (error) {
-		printk(KERN_ALERT "cdev_add() failed: error = %d\n", error);
+		printk(KERN_ERR "cdev_add() failed: error = %d\n", error);
 		unregister_chrdev_region(ecbsp.devt, 1);
 		return -1;
 	}	
@@ -568,12 +576,11 @@ static int __init ecbsp_init_class(void)
 	ecbsp.class = class_create(THIS_MODULE, "ecbsp");
 
 	if (!ecbsp.class) {
-		printk(KERN_ALERT "class_create(ecbsp) failed\n");
+		printk(KERN_ERR "class_create(ecbsp) failed\n");
 		return -1;
 	}
 
-	ecbsp.dev = device_create(ecbsp.class, NULL, 
-					ecbsp.devt, NULL, "ecbsp");
+	ecbsp.dev = device_create(ecbsp.class, NULL, ecbsp.devt, NULL, "ecbsp");
 
 	if (!ecbsp.dev) {
 		class_destroy(ecbsp.class);
@@ -595,14 +602,15 @@ static int __init ecbsp_init(void)
 
 	sema_init(&ecbsp.sem, 1);
 
-	if (num_motors < 1 || num_motors > 1024) {
-		printk(KERN_ALERT "Invalid num_motors %d, reset to %d\n",
+	if (num_motors == 0 || num_motors > MAX_MOTORS 
+		|| (num_motors % 16) != 0) {
+		printk(KERN_INFO "Invalid num_motors %d, reset to %d\n",
 			num_motors, DEFAULT_NUM_MOTORS);
 		num_motors = DEFAULT_NUM_MOTORS;
 	}
 
 	if (delay_us < 1 || delay_us > 1000) {
-		printk(KERN_ALERT "Invalid delay_us %d, reset to %d\n",
+		printk(KERN_INFO "Invalid delay_us %d, reset to %d\n",
 			delay_us, DEFAULT_DELAY_US);
 
 		delay_us = DEFAULT_DELAY_US;
@@ -622,6 +630,10 @@ static int __init ecbsp_init(void)
 		goto init_fail_3;
 	}
 
+	/* force hrtimer for long delays */
+	if (delay_us > 300)
+		use_hrtimer = 1;
+
 	if (use_hrtimer) {
 		hrtimer_init(&ecbsp.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		ecbsp.timer.function = ecbsp_timer_callback;
@@ -632,7 +644,7 @@ static int __init ecbsp_init(void)
 
 	/* for debug convenience */
 	if (ecbsp_mcbsp_start())
-		printk(KERN_ALERT "Auto ecbsp_mcbsp_start() failed\n");
+		printk(KERN_ERR "Auto ecbsp_mcbsp_start() failed\n");
 
 	return 0;
 
@@ -653,6 +665,8 @@ module_init(ecbsp_init);
 
 static void __exit ecbsp_exit(void)
 {
+	int i;
+
 	if (ecbsp.state & MCBSP_REQUESTED) {
 		ecbsp_mcbsp_stop();
 		omap_mcbsp_free(OMAP_MCBSP3);
@@ -667,6 +681,13 @@ static void __exit ecbsp_exit(void)
 
 	if (ecbsp.user_buff)
 		kfree(ecbsp.user_buff);
+
+	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+		if (dma_block[i].data) {
+			kfree(dma_block[i].data);
+			dma_block[i].data = 0;
+		}
+	}
 }
 module_exit(ecbsp_exit);
 
