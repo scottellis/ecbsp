@@ -42,7 +42,7 @@
 #include <linux/gpio.h>
 #include <linux/moduleparam.h>
 
-#define NUM_TEST_BLOCKS	100000 
+#define NUM_TEST_BLOCKS	10 
 
 #define USER_BUFF_SIZE 4096
 #define NUM_DMA_BLOCKS 1024
@@ -62,7 +62,7 @@
 
 
 /* for testing, a divider of 80 gives us ~1MHz clock */
-#define DEFAULT_CLKDIV 1
+#define DEFAULT_CLKDIV 80
 
 #define MCBSP_REQUESTED		(1 << 0)
 #define MCBSP_STARTED		(1 << 1)
@@ -325,7 +325,7 @@ static int ecbsp_mcbsp_start(void)
 	
 		omap_set_dma_transfer_params(dma_channel,
 						OMAP_DMA_DATA_TYPE_S32,
-						num_motors,
+						num_motors / 16,
 						1,
 						OMAP_DMA_SYNC_BLOCK,
 						ecbsp.dma_tx_sync, 
