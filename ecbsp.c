@@ -475,7 +475,7 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 		len = count;
 	
 	cmd_size = 4 + (ecbsp.num_motors / 4);
-	printk(KERN_ALERT "Expecting cmd_size = %d\n", cmd_size);
+	// printk(KERN_ALERT "Expecting cmd_size = %d\n", cmd_size);
 
 	if ((len % cmd_size) != 0) {
 		printk(KERN_ERR "Invalid write len %d\n", len);
@@ -483,7 +483,7 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 		goto ecbsp_write_done;
 	}
 
-	printk(KERN_ALERT "Copying %d bytes from user\n", len);
+	//printk(KERN_ALERT "Copying %d bytes from user\n", len);
 
 	if (copy_from_user(ecbsp.user_buff, buff, len)) {
 		status = -EFAULT;
