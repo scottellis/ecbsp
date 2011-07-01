@@ -20,6 +20,9 @@
 #define DMA_BLOCK_SIZE 512
 #define MAX_MOTORS 2048
 
+#define NUM_DMA_BLOCKS 1024
+#define USER_BUFF_SIZE (NUM_DMA_BLOCKS * DMA_BLOCK_SIZE)
+
 
 /* ioctl commands */
 #define ECBSP_IOC_MAGIC		0xEC

@@ -44,8 +44,6 @@
 
 #include "ecbsp.h"
 
-#define USER_BUFF_SIZE 4096
-#define NUM_DMA_BLOCKS 1024
 
 #define DEFAULT_DMA_QUEUE_THRESHOLD 10
 
