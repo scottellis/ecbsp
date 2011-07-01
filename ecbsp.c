@@ -44,28 +44,17 @@
 
 #include "ecbsp.h"
 
-#define NUM_TEST_BLOCKS	10 
-
 #define USER_BUFF_SIZE 4096
 #define NUM_DMA_BLOCKS 1024
 
-/*
- The McBSP3 transmit buffer XB is 128×32 bit words.
-
- To keep things simple, lets restrict the number of motors to fit.
- This is not a hard limit and the DMA engine should handle the details,
- but we'll start here.
-
- 128 x 4 = 512 bytes is our max required DMA block size
- 512 bytes x 4 motors per byte = 2048 max motors 
-*/
-#define DMA_BLOCK_SIZE 512
-#define MAX_MOTORS 2048
 #define DEFAULT_DMA_QUEUE_THRESHOLD 10
 
 
-/* mcbsp3->iclk is 83 MHz, a divider of 83 gives ~1MHz clock */
-#define DEFAULT_CLKDIV 83
+/* mcbsp3->iclk is 83 MHz, 
+  a divider of 83 gives ~1MHz clock 
+  a divider of 5 gives ~16MHz clock
+*/
+#define DEFAULT_CLKDIV 5
 
 #define MCBSP_REQUESTED		(1 << 0)
 #define MCBSP_CONFIG_SET	(1 << 1)
@@ -228,7 +217,7 @@ static int ecbsp_map_dma_block(int idx)
 
 	dma_block[idx].dma_handle = dma_map_single(ecbsp.dev, 
 						dma_block[idx].data, 
-						DMA_BLOCK_SIZE, 
+						ecbsp.num_motors / 4, 
 						DMA_TO_DEVICE);
 
 	if (!dma_block[idx].dma_handle) {
@@ -249,7 +238,7 @@ static void ecbsp_unmap_dma_block(int idx)
 	if (dma_block[idx].dma_handle) {
 		dma_unmap_single(ecbsp.dev, 
 				dma_block[idx].dma_handle, 
-				DMA_BLOCK_SIZE, 
+				ecbsp.num_motors / 4, 
 				DMA_TO_DEVICE);
 
 		dma_block[idx].dma_handle = 0;
@@ -337,10 +326,11 @@ static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 
 static int ecbsp_kickstart_dma(void)
 {	
-	if (!(ecbsp.state & MCBSP_STARTED)) {
-		printk(KERN_INFO "Not running\n");
-		return -EINVAL;
-	}
+	if (!(ecbsp.state & MCBSP_STARTED))
+		return 0;
+
+	if (ecbsp.state & DMA_RUNNING)
+		return 0;
 
 	if (q_count() < ecbsp.queue_threshold)
 		return 0;
@@ -360,10 +350,8 @@ static int ecbsp_mcbsp_start(void)
 {
 	int dma_channel, ret;
 
-	if (ecbsp.state & MCBSP_STARTED) {
-		printk(KERN_INFO "Already running\n");
-		return -EINVAL;
-	}
+	if (ecbsp.state & MCBSP_STARTED)
+		return 0;
 
 	if (!(ecbsp.state & MCBSP_REQUESTED)) {
 		printk(KERN_ERR "Error: start called before request\n");
@@ -409,11 +397,6 @@ static int ecbsp_mcbsp_start(void)
 		}
 	}
 
-	ecbsp.write_count = 0;
-
-	q_head = q_tail = 0;
-	ecbsp.current_dma_idx = -1;
-
 	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
 	ecbsp.state |= MCBSP_STARTED;
 
@@ -429,9 +412,11 @@ static int ecbsp_queue_data(unsigned char *data)
 	ecbsp_unmap_dma_block(q_tail);
 
 	// copy the new user data into dma_block[q_tail].data
-	// todo
+	// I'll clean this up shortly, need to skip over the delay
+	// but only copy as much as we'll be transmitting
+	memcpy(dma_block[q_tail].data, data + 4, ecbsp.num_motors / 4);
 
-	// then map it again
+	// then map the buffer again
 	if (ecbsp_map_dma_block(q_tail)) {
 		printk(KERN_ERR "DMA mapping failed in ecbsp_queue_data()\n");
 		return -ENOMEM;
@@ -439,9 +424,6 @@ static int ecbsp_queue_data(unsigned char *data)
 
 	q_add();
 
-	if ((ecbsp.state & MCBSP_STARTED) && !(ecbsp.state & DMA_RUNNING))
-		return ecbsp_kickstart_dma();
-	
 	return 0;
 }
 
@@ -480,8 +462,8 @@ static int ecbsp_mcbsp_request(void)
 static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 		size_t count, loff_t *f_pos)
 {
+	int i, len, cmd_size;
 	ssize_t status;
-	size_t len = USER_BUFF_SIZE - 1;
 
 	if (count == 0)
 		return 0;
@@ -489,22 +471,43 @@ static ssize_t ecbsp_write(struct file *filp, const char __user *buff,
 	if (down_interruptible(&ecbsp.sem))
 		return -ERESTARTSYS;
 
-	if (len > count)
+	if (count > USER_BUFF_SIZE)
+		len = USER_BUFF_SIZE;
+	else
 		len = count;
 	
-	memset(ecbsp.user_buff, 0, USER_BUFF_SIZE);
-	
+	cmd_size = 4 + (ecbsp.num_motors / 4);
+	printk(KERN_ALERT "Expecting cmd_size = %d\n", cmd_size);
+
+	if ((len % cmd_size) != 0) {
+		printk(KERN_ERR "Invalid write len %d\n", len);
+		status = -EINVAL;
+		goto ecbsp_write_done;
+	}
+
+	printk(KERN_ALERT "Copying %d bytes from user\n", len);
+
 	if (copy_from_user(ecbsp.user_buff, buff, len)) {
 		status = -EFAULT;
 		goto ecbsp_write_done;
 	}
 
-	status = ecbsp_queue_data(ecbsp.user_buff);
-	if (status < 0)
-		goto ecbsp_write_done;
+	for (i = 0; i < len; i += cmd_size) {
+		// printk(KERN_ALERT "Queueing command %d\n", i / cmd_size);
+ 
+		status = ecbsp_queue_data(ecbsp.user_buff + i);
+		if (status < 0) {
+			if (status == -EAGAIN)
+				break;
+			else
+				goto ecbsp_write_done;
+		}
+	}
 		
-	status = len;
-	*f_pos += len;
+	ecbsp_kickstart_dma();
+
+	status = i;
+	*f_pos += i;
 
 ecbsp_write_done:
 
@@ -723,7 +726,7 @@ static int __init ecbsp_init(void)
 
 	ecbsp.num_motors = motors;
 
-	if (delay_us < 1 || delay_us > 1000) {
+	if (delay_us < 1 || delay_us > 900000) {
 		printk(KERN_INFO "Invalid delay_us %d, reset to %d\n",
 			delay_us, DEFAULT_DELAY_US);
 
