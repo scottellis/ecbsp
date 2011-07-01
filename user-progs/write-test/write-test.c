@@ -11,8 +11,8 @@
 
 #include "ecbsp.h"
 
-#define NUM_COMMANDS 1024
-#define NUM_MOTORS 2048
+#define NUM_COMMANDS 512
+#define NUM_MOTORS 768
 
 const char device_name[] = "/dev/ecbsp";
 
@@ -24,14 +24,17 @@ int write_cmd_buff(int fd, unsigned char *data, int total_len, int cmd_len)
 
 	while (sent < total_len) {
 		this_try = total_len - sent;
-		if (this_try > 4096)
-			this_try = cmd_len * (4096 / cmd_len);
+		if (this_try > USER_BUFF_SIZE)
+			this_try = cmd_len * (USER_BUFF_SIZE / cmd_len);
 
 		n = write(fd, data + sent, this_try);
 		if (n < 0) {
 			perror("write");
 			return n;
 		}
+		
+		if (n < this_try)
+			sleep(1);
 
 		sent += n;
 	}
@@ -59,7 +62,7 @@ unsigned char* prepare_data(int num_cmds, int num_motors, int *total_size)
 	bits = 0x02;
 
 	for (i = 0; i < size_required; i += size_of_one_cmd) {
-		// the 4-byte delay
+		// the 4-byte delay, not used yet
 		*((unsigned int *)&data[i]) = 500;
 		
 		// the motor commands, 4 per byte
@@ -81,7 +84,7 @@ unsigned char* prepare_data(int num_cmds, int num_motors, int *total_size)
 
 void run_tests(int fd)
 {
-	int num_motors, thresh, total_size;
+	int num_motors, thresh, total_size, i;
 	unsigned char *data;
 
 	printf("Stopping the ecbsp device\n\n");	
@@ -124,8 +127,12 @@ void run_tests(int fd)
 	if (!data)
 		return;
 	
-	if (write_cmd_buff(fd, data, total_size, 4 + (num_motors / 4)))
-		printf("Failed to write motor commands\n");
+	for (i = 0; i < 100; i++) {
+		if (write_cmd_buff(fd, data, total_size, 4 + (num_motors / 4))) {
+			printf("Failed to write motor commands\n");
+			break;
+		}
+	}
 
 	free(data);
 }
