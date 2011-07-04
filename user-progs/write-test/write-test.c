@@ -11,21 +11,27 @@
 
 #include "ecbsp.h"
 
-#define NUM_COMMANDS 512
+// one BLOCK represents all the commands for NUM_MOTORS + a delay
+#define NUM_BLOCKS 512
+//#define NUM_BLOCKS 8
+
 #define NUM_MOTORS 768
+//#define NUM_MOTORS 16
 
 const char device_name[] = "/dev/ecbsp";
 
-int write_cmd_buff(int fd, unsigned char *data, int total_len, int cmd_len)
+int write_cmd_buff(int fd, unsigned char *data, int num_blocks, int block_size)
 {
-	int sent, this_try, n;
+	int total_len, sent, this_try, n;
+
+	total_len = num_blocks * block_size;
 
 	sent = 0;
 
 	while (sent < total_len) {
 		this_try = total_len - sent;
 		if (this_try > USER_BUFF_SIZE)
-			this_try = cmd_len * (USER_BUFF_SIZE / cmd_len);
+			this_try = block_size * (USER_BUFF_SIZE / block_size);
 
 		n = write(fd, data + sent, this_try);
 		if (n < 0) {
@@ -42,15 +48,14 @@ int write_cmd_buff(int fd, unsigned char *data, int total_len, int cmd_len)
 	return 0;
 }
 
-unsigned char* prepare_data(int num_cmds, int num_motors, int *total_size)
+unsigned char* prepare_data(int num_blocks, int block_size)
 {
-	int size_required, size_of_one_cmd, i, j;
+	int size_required, i, j;
+	unsigned int delay;
 	unsigned char bits;
 	unsigned char *data;
 
-	size_of_one_cmd = 4 + (num_motors / 4);
-
-	size_required = num_cmds * size_of_one_cmd;
+	size_required = num_blocks * block_size;
 
 	data = malloc(size_required);
 
@@ -59,16 +64,24 @@ unsigned char* prepare_data(int num_cmds, int num_motors, int *total_size)
 		return NULL;
 	}
 
+	// fake some data
 	bits = 0x02;
+	delay = 500;
 
-	for (i = 0; i < size_required; i += size_of_one_cmd) {
-		// the 4-byte delay, not used yet
-		*((unsigned int *)&data[i]) = 500;
-		
+	for (i = 0; i < size_required; i += block_size) {
+		// the 4-byte delay
+		*((unsigned int *)&data[i]) = delay;
+
 		// the motor commands, 4 per byte
-		for (j = i + 4; j < i + size_of_one_cmd; j++) {
+		for (j = i + 4; j < i + block_size; j++)
 			data[j] = bits;
-		}
+
+
+		// change the data a little		
+		if (delay >= 1500)
+			delay = 500;
+		else
+			delay += 100;
 
 		
 		if (bits > 0xf0)
@@ -77,14 +90,13 @@ unsigned char* prepare_data(int num_cmds, int num_motors, int *total_size)
 			bits = (bits << 1) | 0x02;
 	}	
 
-	*total_size = size_required;
-
 	return data;
 }
 
 void run_tests(int fd)
 {
-	int num_motors, thresh, total_size, i;
+	int num_motors, thresh, i;
+	int num_blocks, block_size;
 	unsigned char *data;
 
 	printf("Stopping the ecbsp device\n\n");	
@@ -118,17 +130,19 @@ void run_tests(int fd)
 		return;
 	}
 
+	num_blocks = NUM_BLOCKS;
+	block_size = 4 + (num_motors / 4);
 
 	printf("You have ten seconds to setup the scope\n");
 
 	sleep(10);
 
-	data = prepare_data(NUM_COMMANDS, num_motors, &total_size);
+	data = prepare_data(num_blocks, block_size);
 	if (!data)
 		return;
 	
-	for (i = 0; i < 100; i++) {
-		if (write_cmd_buff(fd, data, total_size, 4 + (num_motors / 4))) {
+	for (i = 0; i < 1; i++) {
+		if (write_cmd_buff(fd, data, num_blocks, block_size)) {
 			printf("Failed to write motor commands\n");
 			break;
 		}
