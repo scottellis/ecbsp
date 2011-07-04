@@ -68,7 +68,7 @@ static int motors = DEFAULT_NUM_MOTORS;
 module_param(motors, int, S_IRUGO);
 MODULE_PARM_DESC(motors, "Number of motors being controlled");
 
-#define DEFAULT_DELAY_US 50
+#define DEFAULT_DELAY_US 200
 static int delay_us = DEFAULT_DELAY_US;
 module_param(delay_us, int, S_IRUGO);
 MODULE_PARM_DESC(delay_us, "Delay between blocks in microseconds");
@@ -86,7 +86,9 @@ struct ecbsp_dma {
 	u8 *data;
 };
 
+/* both these arrays are used with the same q_head/q_tail index */
 static struct ecbsp_dma dma_block[NUM_DMA_BLOCKS];
+static u32 block_delay[NUM_DMA_BLOCKS];
 
 #define QUEUE_SIZE (NUM_DMA_BLOCKS - 1)
 
@@ -173,7 +175,9 @@ static struct omap_mcbsp_reg_cfg mcbsp_config = {
 
 /*
   Configure for 32 bit 'word' lengths with a frame sync pulse of
-  two CLKDV cycles between each 'word'
+  two CLKDV cycles between each 'word'. 
+  The 32 bit word lengths are determined with FWID(31).
+  The two CLKDV cycles between words is determined by FPER(33).
 */
 static int ecbsp_set_mcbsp_config(void)
 {
@@ -406,12 +410,13 @@ static int ecbsp_queue_data(unsigned char *data)
 	if (q_full())
 		return -EAGAIN;
 
+	// block delay is the first 4 bytes
+	block_delay[q_tail] = *(u32 *)data;
+
 	// unmap the dma memory
 	ecbsp_unmap_dma_block(q_tail);
 
 	// copy the new user data into dma_block[q_tail].data
-	// I'll clean this up shortly, need to skip over the delay
-	// but only copy as much as we'll be transmitting
 	memcpy(dma_block[q_tail].data, data + 4, ecbsp.num_motors / 4);
 
 	// then map the buffer again
