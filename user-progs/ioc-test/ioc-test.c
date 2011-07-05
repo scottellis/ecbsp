@@ -24,13 +24,13 @@ void run_tests(int fd)
 		return;
 	}
 
-	// Number of active motors, must be a multiple of 16, range 16 - 2048
-	if (ioctl(fd, ECBSP_RD_NUM_MOTORS, &val) < 0) {
-		perror("ioctl(ECBSP_RD_NUM_MOTORS)");
+	// Number of motors per row, must be a multiple of 16, range 16 - 2048
+	if (ioctl(fd, ECBSP_RD_MOTORS_PER_ROW, &val) < 0) {
+		perror("ioctl(ECBSP_RD_MOTORS_PER_ROW)");
 		return;
 	}
 
-	printf("Current motors = %d\n", val);
+	printf("Current motors per row = %d\n", val);
 
 	// make a change
 	if (val >= 2048)
@@ -40,17 +40,17 @@ void run_tests(int fd)
 
 	printf("Setting motors to %d\n", val);
 
-	if (ioctl(fd, ECBSP_WR_NUM_MOTORS, &val) < 0) {
-		perror("ioctl(ECBSP_WR_NUM_MOTORS)");
+	if (ioctl(fd, ECBSP_WR_MOTORS_PER_ROW, &val) < 0) {
+		perror("ioctl(ECBSP_WR_MOTORS_PER_ROW)");
 		return;
 	}
 
-	if (ioctl(fd, ECBSP_RD_NUM_MOTORS, &val) < 0) {
-		perror("ioctl(ECBSP_RD_NUM_MOTORS)");
+	if (ioctl(fd, ECBSP_RD_MOTORS_PER_ROW, &val) < 0) {
+		perror("ioctl(ECBSP_RD_MOTORS_PER_ROW)");
 		return;
 	}
 
-	printf("New motors = %d\n\n", val);
+	printf("New motors per row = %d\n\n", val);
 
 
 	// queue threshold, the number of queued commands before starting
