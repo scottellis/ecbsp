@@ -51,55 +51,29 @@ After that, the makefile should work.
   test
 -------
 
-So we have basic functionality now. Once you load the driver you should immediately
-start seeing activity on the CLKX line and FSX should be high. The clock should
-be running at ~1MHz. You can specify three module params
+You can specify one module param for the number of motors per row
 
-	num_motors=(1-1024)
-	delay_us=(1-1000)
-	use_hrtimer=(0 or 1)
+	motors=(16-2048 in multiples of 16, default is 256)
 
-You can only changes these parameters on driver load for now. This will change.
+You can also change this with an ioctl.
 
-If you then invoke the write function, you should see num_motor pulses of the 
-FSX line. For each 32-bit transfer the FSX line is held low representing the 
-SPI CS signal. Between each 32-bit transfer the FSX line should go high for 2 
-clock pulses. This is configurable. I just hard-coded 2.
+There are some test programs in the user-progs directory.
 
-Here's an example session, fooling around with delays. Need a scope to watch
-what's happening. 
+Once the driver has received a 'queue_threshold' number of motor commands from
+userland, it will start transmitting. The default frequency is 16 MHz.
 
-	root@tide:~# insmod ecbsp.ko delay_us=46 num_motors=48
-	[ 7650.548400] use_hrtimer = 0  delay_us = 46
-	root@tide:~# echo write > /dev/ecbsp 
-
-	root@tide:~# rmmod ecbsp.ko 
-
-	root@tide:~# insmod ecbsp.ko delay_us=56 num_motors=48
-	[ 7863.298736] use_hrtimer = 0  delay_us = 56
-	root@tide:~# echo write > /dev/ecbsp 
-
-	root@tide:~# rmmod ecbsp.ko 
-
-	root@tide:~# insmod ecbsp.ko delay_us=86 num_motors=48
-	[ 8498.462493] use_hrtimer = 0  delay_us = 86
-	root@tide:~# echo write > /dev/ecbsp 
-
-Right now the driver is hard-coded to send 100 blocks of num_motors with the 
-delay you specify in between each. The delay you give has to compensate for
-the data transfer since we starting the new block delay from the DMA callback
-not the McBSP transfer complete callback. This may change. Still working out
-what we want to do for the actual project.
-
-The hard-coded clock speed is set at ~41.5MHz. Empirically, an estimate ~750ns
-for each 32-bit transfer is good for compensating the delay at this speed.
-
-48 * 750ns = 36us, so that's why you see delay_us = 46. That turns into a delay
-between blocks of 10 us.
-
-Hey! It's a work in progress ;-)
+The driver is still under development, but it mostly works for the portions
+that are implemented. Hasn't got a lot of testing yet.
 
 
+TODO
 
+1. Need to work out how to handle the delay between cycles, in particular what
+the true minimum requirement is so we can decide whether we need udelay or
+can just use hrtimers. Also, do we need a McBSP TX callback to start the delay
+timing more accurately. Right now we use the DMA callback which doesn't mean
+the McBSP controller is done transmitting.
+
+2. The user/driver interface is still not settled.
 
 
