@@ -207,7 +207,7 @@ static int ecbsp_map_dma_block(struct ecbsp_dma *block)
 
 	block->dma_handle = dma_map_single(ecbsp.dev, 
 					block->data, 
-					ecbsp.motors_per_row / 4, 
+					DMA_BLOCK_SIZE, 
 					DMA_TO_DEVICE);
 
 	if (!block->dma_handle) {
@@ -224,7 +224,7 @@ static void ecbsp_unmap_dma_block(struct ecbsp_dma *block)
 	if (block->dma_handle) {
 		dma_unmap_single(ecbsp.dev, 
 				block->dma_handle, 
-				ecbsp.motors_per_row / 4, 
+				DMA_BLOCK_SIZE, 
 				DMA_TO_DEVICE);
 
 		block->dma_handle = 0;
@@ -383,7 +383,7 @@ static int ecbsp_mcbsp_start(void)
 						1,
 						OMAP_DMA_SYNC_BLOCK,
 						ecbsp.dma_tx_sync, 
-						0);
+						OMAP_DMA_DST_SYNC);
 
 		omap_set_dma_dest_params(dma_channel,
 					0,
@@ -456,6 +456,7 @@ static int ecbsp_mcbsp_request(void)
 	/* 
 	We don't want POLL_IO, but we don't want the mcbsp driver
         allocating irq handlers for McBSP events that we might need.
+	We aren't using this yet, but might in the future.
 	Have to call this before omap_mcbsp_request().
 	*/
 	ret = omap_mcbsp_set_io_type(OMAP_MCBSP3, OMAP_MCBSP_POLL_IO);
