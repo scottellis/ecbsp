@@ -14,11 +14,22 @@
  This is not a hard limit and the DMA engine should handle the details,
  but we'll start here until timing gets worked out.
 
- 128 x 4 = 512 bytes is our max required DMA block size
- 512 bytes x 4 motors per byte = 2048 max motors 
+ McBSP3 has a 512 byte TX buffer
+
+ Each motor takes 6 bits to control - mask enable(2)/data(2)/mask enable(2)
+
+ 512 bytes * 8 bits/1 byte * 1 motor/6 bits = 682.66 motors
+
+ So a convenient max for now is
+
+ MAX_MOTORS_PER_ROW = 682
+
+ We'll probably change this later.
+
+ Keep DMA_BLOCK_SIZE at PAGE_SIZE to ensure cache alignment.
 */
-#define DMA_BLOCK_SIZE 512
-#define MAX_MOTORS_PER_ROW 2048
+#define DMA_BLOCK_SIZE 4096
+#define MAX_MOTORS_PER_ROW 682
 
 #define NUM_DMA_BLOCKS 1024
 #define USER_BUFF_SIZE (NUM_DMA_BLOCKS * DMA_BLOCK_SIZE)
