@@ -44,7 +44,7 @@
 #include "ecbsp.h"
 
 
-#define DEFAULT_DMA_QUEUE_THRESHOLD 10
+#define DEFAULT_DMA_QUEUE_THRESHOLD 8
 
 
 /* mcbsp3->iclk is 83 MHz, 
@@ -69,58 +69,64 @@ MODULE_PARM_DESC(motors, "Number of motors per row");
 
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 
-struct ecbsp_dma {
-	dma_addr_t dma_handle;
-	u8 *data;
-};
 
-/* both these arrays are used with the same q_head/q_tail index */
-static struct ecbsp_dma dma_block[NUM_DMA_BLOCKS];
-static u32 block_delay[NUM_DMA_BLOCKS];
-static struct ecbsp_dma enable_block;
+static unsigned char *step_data;
+static unsigned int step_delay[STEPS_IN_QUEUE];
+static dma_addr_t dma_handle[NUM_DMA_PAGES];
 
-#define QUEUE_SIZE (NUM_DMA_BLOCKS - 1)
-
-int q_head;
-int q_tail;
-
-static int q_empty(void)
+static int q_empty(struct qctl *q)
 {
-	return (q_head == q_tail);
+	return (q->tx_head == q->tail);
 }
 
-static int q_count(void)
-{
-	return ((NUM_DMA_BLOCKS + q_tail) - q_head) % NUM_DMA_BLOCKS;
-}
-
-static int q_full(void)
-{
-	return QUEUE_SIZE == q_count();
-}
-
-static int q_add(void)
-{
-	if (q_full())
-		return -1;
-
-	q_tail = (q_tail + 1) % NUM_DMA_BLOCKS;
-
-	return q_tail;
-}
-
-static int q_remove(void)
+static int q_remove(struct qctl *q)
 {
 	int ret;
 
-	if (q_empty())
+	if (q_empty(q))
 		return -1;
 
-	ret = q_head;
+	ret = q->tx_head;
 
-	q_head = (q_head + 1) % NUM_DMA_BLOCKS;
+	q->tx_head = (q->tx_head + 1) % STEPS_IN_QUEUE;
 
 	return ret;
+}
+
+static int q_unmap_page(struct qctl *q)
+{
+	int ret, steps;
+
+	steps = ((STEPS_IN_QUEUE + q->tx_head) - q->head) % STEPS_IN_QUEUE; 
+
+	if (steps < STEPS_IN_PAGE)
+		return -1;
+
+	ret = q->head;
+
+	q->head = (q->head + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+
+	return ret;
+}
+
+static int q_count(struct qctl *q)
+{
+	return ((STEPS_IN_QUEUE + q->tail) - q->head) % STEPS_IN_QUEUE;
+}
+
+static int q_full(struct qctl *q)
+{
+	return QUEUE_SIZE == q_count(q);
+}
+
+static int q_add(struct qctl *q)
+{
+	if (q_full(q))
+		return -1;
+
+	q->tail = (q->tail + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+
+	return q->tail;
 }
 
 #define TX_FIRST_ENABLE_BLOCK	1
@@ -193,24 +199,24 @@ static int ecbsp_set_mcbsp_config(void)
 	return 0;
 }
 
-static int ecbsp_map_dma_block(struct ecbsp_dma *block)
+static int ecbsp_map_dma_block(int didx)
 {
-	if (!block->data) {
-		printk(KERN_ERR "dma block data is NULL, can't map\n"); 
-		return -ENOMEM;
+	if (didx < 0 || didx >= NUM_DMA_PAGES) {
+		printk(KERN_ERR "Invalid idx to map_dma_block: %d\n", didx);
+		return -1;
 	}
 
-	if (block->dma_handle) {
+	if (dma_handle[didx]) {
 		printk(KERN_ERR "dma block already mapped\n");
 		return -EINVAL;
 	}
 
-	block->dma_handle = dma_map_single(ecbsp.dev, 
-					block->data, 
+	dma_handle[didx] = dma_map_single(ecbsp.dev, 
+					step_data + (didx * DMA_BLOCK_SIZE), 
 					DMA_BLOCK_SIZE, 
 					DMA_TO_DEVICE);
 
-	if (!block->dma_handle) {
+	if (!dma_handle[sidx]) {
 		printk(KERN_ERR "Failed to map dma handle\n");
 		return -ENOMEM;
 	}
@@ -219,25 +225,29 @@ static int ecbsp_map_dma_block(struct ecbsp_dma *block)
 	return 0;
 }
 
-static void ecbsp_unmap_dma_block(struct ecbsp_dma *block)
+static void ecbsp_unmap_dma_block(int didx)
 {
-	if (block->dma_handle) {
+	if (didx < 0 || didx >= NUM_DMA_PAGES) {
+		printk(KERN_ERR "Invalid idx to unmap_dma_block: %d\n", didx);
+		return -1;
+	}
+
+	if (dma_handle[didx]) {
 		dma_unmap_single(ecbsp.dev, 
-				block->dma_handle, 
+				dma_handle[didx], 
 				DMA_BLOCK_SIZE, 
 				DMA_TO_DEVICE);
 
-		block->dma_handle = 0;
+		dma_handle[didx] = 0;
 	}
-
 }
 
-static void ecbsp_mcbsp_dma_write(struct ecbsp_dma *block)
+static void ecbsp_mcbsp_dma_write(int didx)
 {
 	omap_set_dma_src_params(ecbsp.dma_channel,
 				0,
 				OMAP_DMA_AMODE_POST_INC,
-				block->dma_handle,
+				dma_handle[didx],
 				0, 
 				0);
 
@@ -261,10 +271,10 @@ static int ecbsp_mcbsp_stop(void)
 		ecbsp.dma_channel = -1;
 	}	
 
-	for (i = 0; i < NUM_DMA_BLOCKS; i++)
-		ecbsp_unmap_dma_block(&dma_block[i]);
-
-	ecbsp_unmap_dma_block(&enable_block);
+	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
+		ecbsp_unmap_dma_block(&data_block[i]);
+		ecbsp_unmap_dma_block(&enable_block[i]);
+	}
 
 	return 0;
 }
@@ -281,7 +291,7 @@ static inline void ecbsp_start_dma_with_delay(void)
 		if (block_delay[ecbsp.current_dma_idx] > 0)
 			udelay(block_delay[ecbsp.current_dma_idx]);
 
-		ecbsp_mcbsp_dma_write(&enable_block);
+		ecbsp_mcbsp_dma_write(&enable_block[ecbsp.current_dma_idx]);
 		ecbsp.tx_sequence = TX_FIRST_ENABLE_BLOCK;
 	}
 	// for delays longer then 100 us start a timer, 
@@ -306,12 +316,12 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 		return;
 
 	if (ecbsp.tx_sequence == TX_FIRST_ENABLE_BLOCK) {
-		ecbsp_mcbsp_dma_write(&dma_block[ecbsp.current_dma_idx]);
+		ecbsp_mcbsp_dma_write(&data_block[ecbsp.current_dma_idx]);
 		ecbsp.tx_sequence = TX_DATA_BLOCK;
 		return;
 	}
 	else if (ecbsp.tx_sequence == TX_DATA_BLOCK) {
-		ecbsp_mcbsp_dma_write(&enable_block);
+		ecbsp_mcbsp_dma_write(&enable_block[ecbsp.current_dma_idx]);
 		ecbsp.tx_sequence = TX_SECOND_ENABLE_BLOCK;
 		return;
 	}
@@ -330,7 +340,7 @@ static void ecbsp_dma_callback(int lch, u16 ch_status, void *data)
 static enum hrtimer_restart ecbsp_timer_callback(struct hrtimer *timer)
 {
 	if (ecbsp.state & MCBSP_STARTED) {
-		ecbsp_mcbsp_dma_write(&enable_block);
+		ecbsp_mcbsp_dma_write(&enable_block[ecbsp.current_dma_idx]);
 		ecbsp.tx_sequence = TX_FIRST_ENABLE_BLOCK;
 	}
 
@@ -404,20 +414,6 @@ static int ecbsp_mcbsp_start(void)
 		}
 	}
 
-	if (!enable_block.dma_handle) {
-		if (!enable_block.data) {
-			printk(KERN_ERR "enable_block data NULL in start\n");
-			return -ENOMEM;
-		}
-
-		memset(enable_block.data, 0xAA, sizeof(DMA_BLOCK_SIZE));
-
-		if (ecbsp_map_dma_block(&enable_block)) {
-			printk(KERN_ERR "DMA mapping failed in start\n");
-			return -ENOMEM;
-		}
-	}
-
 	omap_mcbsp_start(OMAP_MCBSP3, TXEN, RXEN);
 	ecbsp.state |= MCBSP_STARTED;
 
@@ -433,13 +429,14 @@ static int ecbsp_queue_data(unsigned char *data)
 	block_delay[q_tail] = *(u32 *)data;
 
 	// unmap the dma memory
-	ecbsp_unmap_dma_block(&dma_block[q_tail]);
+	ecbsp_unmap_dma_block(&data_block[q_tail]);
+	ecbsp
 
-	// copy the new user data into dma_block[q_tail].data
-	memcpy(dma_block[q_tail].data, data + 4, ecbsp.motors_per_row / 4);
+	// copy the new user data into data_block[q_tail].data
+	memcpy(data_block[q_tail].data, data + 4, ecbsp.motors_per_row / 4);
 
 	// then map the buffer again
-	if (ecbsp_map_dma_block(&dma_block[q_tail])) {
+	if (ecbsp_map_dma_block(&data_block[q_tail])) {
 		printk(KERN_ERR "DMA mapping failed in ecbsp_queue_data()\n");
 		return -ENOMEM;
 	}
@@ -638,7 +635,38 @@ static long ecbsp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	return result;
 }
+/*
+static int ecbsp_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	unsigned long size;
+	int ret;
 
+	size = vma->vm_end - vma->vm_start;
+
+	if (size > mt9p001_dev.reserved_mem_size) {
+		printk(KERN_ALERT "mmap request too big: 0x%lx\n", size);
+		return -EINVAL;
+	}
+
+	
+//	printk(KERN_ALERT "pgoff=0x%lx  start=0x%lx  end=0x%lx  size=%lu\n", 
+//		vma->vm_pgoff, vma->vm_start, vma->vm_end, size);
+
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	vma->vm_flags |= VM_RESERVED | VM_IO;
+
+        ret = remap_pfn_range(vma,
+				vma->vm_start,
+				mt9p001_dev.reserved_mem_start >> PAGE_SHIFT,
+				size,
+				vma->vm_page_prot);
+
+	if (ret < 0)
+		printk(KERN_ALERT "remap_pfn_range failed\n");
+
+	return ret;	
+}
+*/
 static int ecbsp_open(struct inode *inode, struct file *filp)
 {
 	int i;	
@@ -648,11 +676,11 @@ static int ecbsp_open(struct inode *inode, struct file *filp)
 		return -ERESTARTSYS;
 	
 	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		if (!dma_block[i].data) {
-			dma_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
+		if (!data_block[i].data) {
+			data_block[i].data = kzalloc(DMA_BLOCK_SIZE, 
 							GFP_KERNEL | GFP_DMA);
 		
-			if (!dma_block[i].data) {
+			if (!data_block[i].data) {
 				printk(KERN_ALERT "data buff alloc failed\n");
 				return -ENOMEM;
 			}
@@ -691,6 +719,7 @@ static const struct file_operations ecbsp_fops = {
 	.read =	ecbsp_read,
 	.write = ecbsp_write,
 	.unlocked_ioctl = ecbsp_ioctl,
+//	.mmap = ecbsp_mmap,
 };
 
 static int __init ecbsp_init_cdev(void)
@@ -751,7 +780,7 @@ static int __init ecbsp_init(void)
 
 	sema_init(&ecbsp.sem, 1);
 
-	if (motors == 0 || motors > MAX_MOTORS_PER_ROW || (motors % 16) != 0) {
+	if (motors == 0 || motors > MAX_MOTORS_PER_ROW || (motors % 16 != 0)) {
 		printk(KERN_INFO "Invalid motors %d, reset to %d\n",
 			motors, DEFAULT_NUM_MOTORS_PER_ROW);
 		motors = DEFAULT_NUM_MOTORS_PER_ROW;
@@ -810,8 +839,8 @@ static void __exit ecbsp_exit(void)
 		kfree(ecbsp.user_buff);
 
 	for (i = 0; i < NUM_DMA_BLOCKS; i++) {
-		if (dma_block[i].data)
-			kfree(dma_block[i].data);
+		if (data_block[i].data)
+			kfree(data_block[i].data);
 	}
 
 	if (enable_block.data)
