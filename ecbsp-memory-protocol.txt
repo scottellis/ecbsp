@@ -1,0 +1,360 @@
+Memory handling for ecbsp driver (DRAFT)
+
+Motor control takes two bits per motor.
+
+The SPI bus writes are done in 32 byte blocks, so we force the number
+of motors to be a multiple of 16 for convenience.
+
+Motors are grouped into rows. Currently we place a limit of 2032 motors
+per row due to facilitate some bookkeeping. This is not a hard limit
+and can be modified in the future.
+
+An operation to operate on a row of motors is called a step and this is
+the fundamental unit for the driver.
+
+There is a temporary limitation of 14 motors per 32 bit word with the
+upper 4 bits reserved for legacy book-keeping. This limitation will
+go away. I am disregarding this in the discussion below. Userland can
+control this by setting the data correctly. This happens at a level
+below what the driver cares about.
+
+
+There are three operations required to operate a motor.
+
+1. Send a step enable command two bits:
+	0b10 enable 
+	0b00 disable
+  
+2. Send the motor control command two bits: 
+	   0b0x don't move
+	   0b10 move CW
+	   0b11 move CCW
+
+3. Repeat the step enable command
+
+
+We group operations on motors into steps with each step operating on
+an entire row of motors.
+
+
+On initialization, the driver allocates a large contiguous block of
+PAGES of DMA capable memory using __get_free_pages() this way
+
+mmap_mem = (unsigned char *)__get_free_pages(GFP_KERNEL | __GFP_DMA, 8);
+
+
+The memory will have a structure as follows:
+
+256 x PAGE_SIZE = 256 x 4096 bytes = 1 MB
+
+
+Each PAGE holds data for 4 steps.
+
+PAGE0 : [step0] [step1] [step2] [step3]
+PAGE1 : [step4] [step5] [step6] [step7]
+PAGE2 : [step8] [step9] [step10] [step11]
+...
+
+Each step is 1K bytes made of two 512 byte dma blocks, one for enabling
+and one for control.
+
+Out of that 512 bytes of data, only 508 bytes is for actual enable and
+control. The last 4 bytes of the enable block is for storing the step
+delay. The last 4 bytes of the control block is unused.
+
+As it processes each step the driver will first delay the time
+specified at the end of the enable block, send the enable block,
+followed by the control block and finally the enable block again before
+moving to the next step.
+
+The driver will map and unmap the memory for DMA in 512 byte or
+DMA_BLOCK_SIZE increments.
+
+The memory will be treated as circular queue with the following three
+indexes shared between the driver and the user program via ioctl.
+
+
+UNMAP |               MAPPED                  |     UNMAPPED     
+
+     head                                    tail
+      |                                       |
+....................................................................
+                  |
+                tx_head
+
+
+The queue is managed without locks and assumes one reader and one
+writer using stanard queue protocol. The additional tx_head index is
+for bookkeeping and DMA handling. 
+
+There will be some additional helper functions to provide convenient
+access the enable and control data buffers and the delay value for a
+given queue index. See below.
+
+The driver does all queue index updates. The driver only moves the tail
+index at the request of the user program, so really the user moves the
+tail. The user program can query the queue status at any time. 
+
+The user program must move its copy of the queue tail when it adds
+steps, but the tail is only officially moved when the driver moves the
+tail.
+
+The driver moves the tx_head index as it transmits data. This can be
+used to keep track of the last step sent. There is an additional
+counter the driver maintains to provide additional summary information.
+
+The driver updates the head index to get as close to the tx_head as it
+can whenever the user makes a queue request.
+
+
+Here are the definitions:
+
+tx_head - The step number the driver is currently transmitting.
+
+head - Head of dma mapped data. Some of this data may have already been 
+       transmitted, but it has not been DMA unmapped yet and so it is
+       still off limits to the CPU (user program or driver).
+
+tail - The start location where userland may write step data. This is
+       memory that is not currently DMA mapped and can be accessed by
+       the CPU by either the driver or user program.
+
+
+Both the driver and user space will share the following definitions
+
+#define DMA_BLOCK_SIZE 512
+#define STEP_DATA_SIZE 508
+#define STEPS_IN_QUEUE 1024
+#define QUEUE_SIZE (STEPS_IN_QUEUE - 1)
+
+struct q_ctl {
+	int head;
+        int tail;
+        int tx_head;
+	int tx_count.
+};
+
+struct q_step_add {
+	struct q_ctl q_ctl;
+	unsigned int count;
+};
+
+=== DRIVER QUEUE FUNCTIONS ===
+
+The driver will use the following queue functions when operating on the
+head of the queue, i.e. transmitting data.
+
+static int q_empty(struct qctl *q)
+{
+	return (q->tx_head == q->tail);
+}
+
+static int q_remove(struct qctl *q)
+{
+	int ret;
+
+	if (q_empty(q))
+		return -1;
+
+	ret = q->tx_head;
+
+	q->tx_head = (q->tx_head + 1) % STEPS_IN_QUEUE;
+
+	return ret;
+}
+
+
+When adding to the queue (operating on the tail) the driver will first
+always attempt to unmap the data between head and tx_head. Here is a
+helper function for that.
+
+static int q_move_head(struct qctl *q)
+{
+	int ret;
+	
+	if (q->head == q->tx_head)
+		return -1;
+
+	ret = q->head;
+
+	q->head = (q->head + 1) % STEPS_IN_QUEUE;
+
+	return ret;
+}
+
+The driver will use the following helper functions to add a new block
+of steps to the queue.
+
+static int q_count(struct qctl *q)
+{
+	return ((STEPS_IN_QUEUE + q->tail) - q->head) % STEPS_IN_QUEUE;
+}
+
+static int q_full(struct qctl *q)
+{
+	return QUEUE_SIZE == q_count(q);
+}
+
+static int q_add(struct qctl *q)
+{
+	if (q_full(q))
+		return -1;
+
+	q->tail = (q->tail + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+
+	return q->tail;
+}
+
+
+The user can query the queue status with an ioctl
+
+int ioctl_queue_query(..., struct qctl *user_q_ctl)
+{
+	int i;
+
+	// update q.head
+	while ((i = q_move_head(&q)) != -1)
+		dma_unmap_step(i);
+
+	copy_to_user(&q, user_q_ctl);
+	
+	return 0;
+}
+
+The driver will allow the user program to add multiple steps, up to
+QUEUE_SIZE, at one time. The user should know the position of the head
+and tail so it does not try to add more steps then there is room for.
+Steps are always added to the current tail.
+
+int ioctl_queue_add(..., struct q_step_add *qsa)
+{
+	int ret, i;
+
+	// update q.head
+	while ((i = q_move_head(&q)) != -1)
+		dma_unmap_step(i);
+
+	ret = 0;
+		
+	for (i = 0; i < qsa->count; i++) {
+		// this should never happen
+		if (q_full(&q))
+			break;
+
+		// update the delays from user
+		step_delay[q.tail] = get_step_delay(mmap_mem, q.tail);
+
+		// prepare mem for dma
+		dma_map_step(q.tail);
+		
+		// increment tail
+		q_add(&q);
+
+		ret++;
+	}
+
+	// a noop if already running or if below the queue threshold
+	kickstart_dma();
+
+	copy_to_user(&q, &qsa->q_ctl);
+	
+	// return how many we added
+	return ret;
+}
+
+
+=== END DRIVER QUEUE FUNCTIONS ===
+
+
+=== USER QUEUE FUNCTIONS ===
+
+The user needs some functions to work on the queue tail in order to add
+new entries.
+
+The queue indexes the user updates with his q_add() are considered
+temporary. They are not real until the driver accepts the entries. 
+
+The user program has to follow the protocol of only reading or writing
+data in the open positions between the queue tail and head as specified
+by the driver.
+
+The driver guarantees he will never move the queue tail except at the
+request of the user program. The driver may move the head pointer, but
+only to make more room which should not affect queue add logic from the
+user perspective.
+
+These should be the only helper functions the user program needs to
+operate on the queue.
+
+static int q_count(struct qctl *q)
+{
+	return ((STEPS_IN_QUEUE + q->tail) - q->head) % STEPS_IN_QUEUE;
+}
+
+static int q_full(struct qctl *q)
+{
+	return QUEUE_SIZE == q_count(q);
+}
+
+static int q_add(struct qctl *q)
+{
+	if (q_full(q))
+		return -1;
+
+	q->tail = (q->tail + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+
+	return q->tail;
+}
+
+=== USER QUEUE FUNCTIONS ===
+
+
+Given a queue index, both the driver and user space can use the
+following functions to access the step enable and step control blocks
+of memory for that index. At most only STEP_DATA_SIZE bytes of data
+should be touched with the pointers these functions return.
+
+unsigned char *get_step_enable_mem(unsigned char *mmap_mem, int qidx)
+{
+	if (qidx < 0 || qidx > QUEUE_SIZE)
+		return NULL;
+
+	return &mmap_mem[2 * DMA_BLOCK_SIZE * qidx];
+}
+
+unsigned char *get_step_control_mem(unsigned char *mmap_mem, int qidx)
+{
+	if (qidx < 0 || qidx > QUEUE_SIZE)
+		return NULL;
+
+	return &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + DMA_BLOCK_SIZE];
+}
+
+And here are some helper functions for accessing the step delay
+
+unsigned int get_step_delay(unsigned char *mmap_mem, int qidx)
+{
+	unsigned char *p;
+
+	if (qidx < 0 || qidx > QUEUE_SIZE)
+		return NULL;
+
+	p = &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
+
+	return *((unsigned int *)p);
+}
+
+void set_step_delay(unsigned char *mmap_mem, int qidx, 
+                    unsigned int delay)
+{
+	unsigned char *p;
+
+	if (qidx < 0 || qidx > QUEUE_SIZE)
+		return;
+	
+	p = &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
+
+	*((unsigned int *)p) = delay;
+}		
+
+
