@@ -200,14 +200,14 @@ static int q_add(struct qctl *q)
 	if (q_full(q))
 		return -1;
 
-	q->tail = (q->tail + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+	q->tail = (q->tail + 1) % STEPS_IN_QUEUE;
 
 	return q->tail;
 }
 
 
-The user can query the queue status with an ioctl
-
+The user can query the queue status with an ioctl, this also moves the
+q.head, unmapping dma as it goes.
 int ioctl_queue_query(..., struct qctl *user_q_ctl)
 {
 	int i;
@@ -228,13 +228,7 @@ Steps are always added to the current tail.
 
 int ioctl_queue_add(..., struct q_step_add *qsa)
 {
-	int ret, i;
-
-	// update q.head
-	while ((i = q_move_head(&q)) != -1)
-		dma_unmap_step(i);
-
-	ret = 0;
+	int i;
 		
 	for (i = 0; i < qsa->count; i++) {
 		// this should never happen
@@ -245,21 +239,19 @@ int ioctl_queue_add(..., struct q_step_add *qsa)
 		step_delay[q.tail] = get_step_delay(mmap_mem, q.tail);
 
 		// prepare mem for dma
-		dma_map_step(q.tail);
+		if (dma_map_step(q.tail))
+			return -ENOMEM;
 		
-		// increment tail
 		q_add(&q);
-
-		ret++;
 	}
 
-	// a noop if already running or if below the queue threshold
+	// a noop if already running or below queue threshold
 	kickstart_dma();
 
-	copy_to_user(&q, &qsa->q_ctl);
-	
-	// return how many we added
-	return ret;
+	if (copy_to_user(&q, &qsa->q_ctl, sizeof(struct q_ctl)))
+		ret = -EFAULT;
+
+	return 0;
 }
 
 
@@ -301,7 +293,7 @@ static int q_add(struct qctl *q)
 	if (q_full(q))
 		return -1;
 
-	q->tail = (q->tail + STEPS_IN_PAGE) % STEPS_IN_QUEUE;
+	q->tail = (q->tail + 1) % STEPS_IN_QUEUE;
 
 	return q->tail;
 }
@@ -314,47 +306,46 @@ following functions to access the step enable and step control blocks
 of memory for that index. At most only STEP_DATA_SIZE bytes of data
 should be touched with the pointers these functions return.
 
-unsigned char *get_step_enable_mem(unsigned char *mmap_mem, int qidx)
+__u8 *get_step_enable_mem(__u8 *mem, int qidx)
 {
 	if (qidx < 0 || qidx > QUEUE_SIZE)
 		return NULL;
 
-	return &mmap_mem[2 * DMA_BLOCK_SIZE * qidx];
+	return &mem[2 * DMA_BLOCK_SIZE * qidx];
 }
 
-unsigned char *get_step_control_mem(unsigned char *mmap_mem, int qidx)
+__u8 *get_step_control_mem(__u8 *mem, int qidx)
 {
 	if (qidx < 0 || qidx > QUEUE_SIZE)
 		return NULL;
 
-	return &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + DMA_BLOCK_SIZE];
+	return &mem[(2 * DMA_BLOCK_SIZE * qidx) + DMA_BLOCK_SIZE];
 }
 
 And here are some helper functions for accessing the step delay
 
-unsigned int get_step_delay(unsigned char *mmap_mem, int qidx)
+__u32 get_step_delay(__u8 *mem, int qidx)
 {
-	unsigned char *p;
+	__u8 *p;
 
 	if (qidx < 0 || qidx > QUEUE_SIZE)
 		return NULL;
 
-	p = &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
+	p = &mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
 
-	return *((unsigned int *)p);
+	return *((__u32 *)p);
 }
 
-void set_step_delay(unsigned char *mmap_mem, int qidx, 
-                    unsigned int delay)
+void set_step_delay(__u8 *mem, int qidx, __u32 delay)
 {
-	unsigned char *p;
+	__u8 *p;
 
 	if (qidx < 0 || qidx > QUEUE_SIZE)
 		return;
 	
-	p = &mmap_mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
+	p = &mem[(2 * DMA_BLOCK_SIZE * qidx) + STEP_DATA_SIZE];
 
-	*((unsigned int *)p) = delay;
+	*((__u32 *)p) = delay;
 }		
 
 
