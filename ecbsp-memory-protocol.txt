@@ -6,17 +6,17 @@ The SPI bus writes are done in 32 byte blocks, so we force the number
 of motors to be a multiple of 16 for convenience.
 
 Motors are grouped into rows. Currently we place a limit of 2032 motors
-per row due to facilitate some bookkeeping. This is not a hard limit
-and can be modified in the future.
+per row so we can stash a 32-bit delay in each 512-byte block. The 512-byte
+block comes from the size McBSP XB transmit buffer. This is not a hard limit
+and can be revisited in the future. 
 
 An operation to operate on a row of motors is called a step and this is
 the fundamental unit for the driver.
 
-There is a temporary limitation of 14 motors per 32 bit word with the
-upper 4 bits reserved for legacy book-keeping. This limitation will
-go away. I am disregarding this in the discussion below. Userland can
-control this by setting the data correctly. This happens at a level
-below what the driver cares about.
+There is a temporary limitation of 14 actual motors per 32-bit word with
+the upper 4 bits reserved for some legacy book-keeping. This limitation
+will go away and it is purely a userland controllable issue. The driver
+assumes each 32-bit word controls 16 motors.
 
 
 There are three operations required to operate a motor.
@@ -33,22 +33,24 @@ There are three operations required to operate a motor.
 3. Repeat the step enable command
 
 
-We group operations on motors into steps with each step operating on
-an entire row of motors.
+Still deciding how the driver will allocate a contiguous block of memory
+to share with the driver.
 
-
-On initialization, the driver allocates a large contiguous block of
-PAGES of DMA capable memory using __get_free_pages() this way
+We could use __get_free_pages() this way
 
 mmap_mem = (unsigned char *)__get_free_pages(GFP_KERNEL | __GFP_DMA, 8);
 
+Or we could set aside some physical RAM on boot that the driver will use.
 
-The memory will have a structure as follows:
+Both have complications I need to understand when it comes to sharing with
+user space via mmap and using with DMA and the cache-flushing.
+
+Regardless, the memory will have a structure as follows:
 
 256 x PAGE_SIZE = 256 x 4096 bytes = 1 MB
 
 
-Each PAGE holds data for 4 steps.
+Each PAGE_SIZE holds data for 4 steps.
 
 PAGE0 : [step0] [step1] [step2] [step3]
 PAGE1 : [step4] [step5] [step6] [step7]
@@ -60,7 +62,8 @@ and one for control.
 
 Out of that 512 bytes of data, only 508 bytes is for actual enable and
 control. The last 4 bytes of the enable block is for storing the step
-delay. The last 4 bytes of the control block is unused.
+delay. This is where the 2032 motors per row comes from. The last 4 bytes
+of the control block is unused.
 
 As it processes each step the driver will first delay the time
 specified at the end of the enable block, send the enable block,
@@ -84,8 +87,8 @@ UNMAP |               MAPPED                  |     UNMAPPED
 
 
 The queue is managed without locks and assumes one reader and one
-writer using stanard queue protocol. The additional tx_head index is
-for bookkeeping and DMA handling. 
+writer. The additional tx_head index is for bookkeeping about DMA
+mapped/unmapped buffers.
 
 There will be some additional helper functions to provide convenient
 access the enable and control data buffers and the delay value for a
